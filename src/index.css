@@ -1,0 +1,20 @@
+/* Halo UI tokens are loaded by @halo-ds/react. This file only adds app layout.
+   Pencil design tokens: drop the exported token values here (see README). */
+* { box-sizing: border-box; }
+body { margin: 0; font-family: var(--halo-font-family-body, system-ui, sans-serif); }
+.app { display: grid; grid-template-columns: 220px 1fr; min-height: 100vh; }
+.sidebar { border-right: 1px solid var(--halo-border-default, #e5e7eb); padding: 16px 12px; display: flex; flex-direction: column; gap: 4px; }
+.brand { font-weight: 700; font-size: 18px; padding: 4px 8px 16px; }
+.nav-section { font-size: 12px; text-transform: uppercase; letter-spacing: .04em; opacity: .6; padding: 12px 8px 4px; }
+.nav-link { padding: 8px; border-radius: 8px; text-decoration: none; color: inherit; }
+.nav-link.active { background: var(--halo-surface-hover, #f3f4f6); font-weight: 600; }
+.main { padding: 24px; max-width: 960px; width: 100%; }
+.page h1 { margin-top: 0; }
+.stack { display: flex; flex-direction: column; gap: 8px; margin: 12px 0; }
+.row { display: flex; align-items: center; gap: 8px; }
+.row.gap { gap: 8px; }
+.row.wrap { flex-wrap: wrap; }
+.row-between { display: flex; justify-content: space-between; align-items: center; gap: 12px; }
+.stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 12px; margin: 16px 0; }
+.timer-bar { position: fixed; bottom: 0; left: 220px; right: 0; display: flex; justify-content: center; align-items: center; gap: 16px; padding: 10px; background: var(--halo-surface-raised, #111827); color: #fff; }
+.timer-bar strong { font-variant-numeric: tabular-nums; }
