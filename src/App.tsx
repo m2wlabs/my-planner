@@ -1,5 +1,6 @@
-import { createRootRoute, createRoute, createRouter, RouterProvider } from "@tanstack/react-router";
-import { useEffect } from "react";
+import { createRootRoute, createRoute, createRouter, RouterProvider, useNavigate } from "@tanstack/react-router";
+import { useEffect, useState } from "react";
+import { Button } from "@halo-ds/react";
 import { Layout, useFirstRunRedirect } from "./components/ui";
 import { GoalsPage, TodayPage } from "./pages/planning";
 import { MoneyPage, ReportsPage } from "./pages/money";
@@ -13,12 +14,35 @@ const rootRoute = createRootRoute({
 
 function Root() {
   useFirstRunRedirect();
-  useWeeklyReview();
-  return <Layout />;
+  const review = useWeeklyReview();
+  return (
+    <>
+      <Layout />
+      {review.due && <ReviewBanner onClose={review.close} />}
+    </>
+  );
+}
+
+function ReviewBanner({ onClose }: { onClose: () => void }) {
+  const navigate = useNavigate();
+  const snooze = () => {
+    const until = new Date(Date.now() + 60 * 60 * 1000).toISOString();
+    api.setSettings({ snoozed_until: until, last_review_sent: "" });
+    onClose();
+  };
+  return (
+    <div className="review-banner">
+      <span>Weekly review is ready.</span>
+      <Button size="sm" variant="primary" onClick={() => { navigate({ to: "/reports" }); onClose(); }}>Open report</Button>
+      <Button size="sm" variant="secondary" onClick={snooze}>Snooze 1 hour</Button>
+      <Button size="sm" variant="ghost" onClick={onClose}>Dismiss</Button>
+    </div>
+  );
 }
 
 function useWeeklyReview() {
   const { data: settings } = useSettings();
+  const [due, setDue] = useState(false);
   useEffect(() => {
     if (!settings || settings.review_enabled === "0") return;
     const reviewTime = settings.review_time ?? "18:00";
@@ -37,6 +61,7 @@ function useWeeklyReview() {
           if (granted) {
             sendNotification({ title: "Weekly review", body: "Your weekly report is ready. Open My Planner → Reports." });
             await api.setSettings({ last_review_sent: weekKey });
+            setDue(true);
           }
         } catch { /* notifications unavailable */ }
         // Save this week's report snapshot.
@@ -53,6 +78,7 @@ function useWeeklyReview() {
     const t = setInterval(check, 60000);
     return () => clearInterval(t);
   }, [settings]);
+  return { due, close: () => setDue(false) };
 }
 
 const todayRoute = createRoute({ getParentRoute: () => rootRoute, path: "/today", component: TodayPage });

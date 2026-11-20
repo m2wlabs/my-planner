@@ -16,5 +16,6 @@ body { margin: 0; font-family: var(--halo-font-family-body, system-ui, sans-seri
 .row.wrap { flex-wrap: wrap; }
 .row-between { display: flex; justify-content: space-between; align-items: center; gap: 12px; }
 .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 12px; margin: 16px 0; }
+.review-banner { position: fixed; top: 16px; right: 16px; z-index: 50; display: flex; align-items: center; gap: 8px; padding: 10px 14px; border-radius: 10px; background: var(--halo-surface-raised, #fff); border: 1px solid var(--halo-border-default, #e5e7eb); box-shadow: 0 8px 24px rgba(0,0,0,.12); }
 .timer-bar { position: fixed; bottom: 0; left: 220px; right: 0; display: flex; justify-content: center; align-items: center; gap: 16px; padding: 10px; background: var(--halo-surface-raised, #111827); color: #fff; }
 .timer-bar strong { font-variant-numeric: tabular-nums; }
