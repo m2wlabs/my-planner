@@ -9,6 +9,7 @@ import { isProviderReady, streamPlannerChat } from "../lib/aiEngine";
 import {
   listBrowserVoices,
   onBrowserVoicesChanged,
+  resolveVoiceTarget,
   speakText,
   startListening,
   type ListenHandle,
@@ -24,7 +25,14 @@ import {
   useSaveAiConfig,
   useTasks,
 } from "../lib/hooks";
-import { AddProviderModal, defaultVoiceForProvider, fmtLatency, fmtTokens } from "../components/AiWidgets";
+import {
+  AddProviderModal,
+  buildVoiceProviderOptions,
+  fmtLatency,
+  fmtTokens,
+  selectedVoiceOptionValue,
+  voicePatchForSelection,
+} from "../components/AiWidgets";
 import { ProviderLogo } from "../components/ProviderLogo";
 import ScrollArea from "../components/ScrollArea";
 import { Alert, Button, ComboboxField, Icon, Input, SelectField, Switch } from "../components/ui";
@@ -271,30 +279,56 @@ function MarkdownRich({ text }: { text: string }) {
 function VoiceQuickSwitch({
   voice,
   providers,
+  activeProviderId,
   onSave,
 }: {
   voice: AiVoiceConfig;
   providers: AiProviderConfig[];
+  activeProviderId?: string;
   onSave: (patch: Partial<AiVoiceConfig>) => void;
 }) {
   const [voices, setVoices] = useState<SpeechSynthesisVoice[]>(() => listBrowserVoices());
+  const [ttsModelDraft, setTtsModelDraft] = useState(voice.ttsModel);
+  const [sttModelDraft, setSttModelDraft] = useState(voice.sttModel);
+  const [ttsVoiceDraft, setTtsVoiceDraft] = useState(voice.ttsVoice);
+
   useEffect(() => {
     setVoices(listBrowserVoices());
     return onBrowserVoicesChanged(setVoices);
   }, []);
 
+  useEffect(() => setTtsModelDraft(voice.ttsModel), [voice.ttsModel]);
+  useEffect(() => setSttModelDraft(voice.sttModel), [voice.sttModel]);
+  useEffect(() => setTtsVoiceDraft(voice.ttsVoice), [voice.ttsVoice]);
+
+  const providerOptions = useMemo(() => buildVoiceProviderOptions(providers), [providers]);
+  const ttsTarget = useMemo(
+    () => resolveVoiceTarget(voice, providers, "tts", activeProviderId),
+    [voice, providers, activeProviderId],
+  );
+  const sttTarget = useMemo(
+    () => resolveVoiceTarget(voice, providers, "stt", activeProviderId),
+    [voice, providers, activeProviderId],
+  );
+  const ttsSelection = selectedVoiceOptionValue(voice, providers, "tts", activeProviderId);
+  const sttSelection = selectedVoiceOptionValue(voice, providers, "stt", activeProviderId);
+
   const ttsVoiceOptions =
-    voice.ttsProvider === "browser"
+    ttsTarget.adapter === "browser"
       ? [
           { value: "", label: "System default" },
           ...voices.map((v) => ({ value: v.name, label: v.name })),
         ]
-      : voice.ttsProvider === "google"
+      : ttsTarget.adapter === "google"
         ? ["Kore", "Puck", "Charon", "Fenrir", "Aoede"].map((v) => ({ value: v, label: v }))
-        : ["alloy", "ash", "coral", "echo", "nova", "onyx", "sage", "shimmer"].map((v) => ({
-            value: v,
-            label: v,
-          }));
+        : ttsTarget.adapter === "xai"
+          ? ["eve", "ara", "rex", "sal", "leo"].map((v) => ({ value: v, label: v }))
+          : ttsTarget.providerKind === "openai" && !voice.ttsBaseUrl.trim()
+            ? ["alloy", "ash", "coral", "echo", "nova", "onyx", "sage", "shimmer"].map((v) => ({
+                value: v,
+                label: v,
+              }))
+            : null;
 
   return (
     <div className="voice-popover">
@@ -302,69 +336,66 @@ function VoiceQuickSwitch({
         <label className="field">
           <span className="field-label">Speak with</span>
           <SelectField
-            value={voice.ttsProvider}
-            onChange={(nextProvider) => {
-              const ttsProvider = nextProvider as AiVoiceConfig["ttsProvider"];
-              onSave({ ttsProvider, ...defaultVoiceForProvider(ttsProvider) });
-            }}
+            value={ttsSelection}
+            onChange={(selection) => onSave(voicePatchForSelection(selection, providers, "tts"))}
             ariaLabel="TTS provider"
-            options={[
-              { value: "browser", label: "Browser Native" },
-              { value: "openai", label: "OpenAI" },
-              { value: "google", label: "Google Gemini" },
-              { value: "openai-compatible", label: "OpenAI-Compatible" },
-            ]}
+            options={providerOptions}
           />
         </label>
         <label className="field">
           <span className="field-label">Voice</span>
-          {voice.ttsProvider === "openai-compatible" ? (
-            <Input
-              value={voice.ttsVoice}
-              placeholder="alloy"
-              onChange={(e) => onSave({ ttsVoice: e.target.value })}
-            />
-          ) : (
+          {ttsVoiceOptions ? (
             <SelectField
               value={voice.ttsVoice}
               onChange={(ttsVoice) => onSave({ ttsVoice })}
               ariaLabel="TTS voice"
               options={ttsVoiceOptions}
             />
+          ) : (
+            <Input
+              value={ttsVoiceDraft}
+              placeholder={ttsTarget.adapter === "minimax" ? "English_Graceful_Lady" : "alloy"}
+              onChange={(e) => setTtsVoiceDraft(e.target.value)}
+              onBlur={() => {
+                if (ttsVoiceDraft !== voice.ttsVoice) onSave({ ttsVoice: ttsVoiceDraft.trim() });
+              }}
+            />
           )}
         </label>
-        {voice.ttsProvider !== "browser" && (
+        {ttsTarget.adapter !== "browser" && (
           <label className="field">
-            <span className="field-label">TTS model</span>
+            <span className="field-label">
+              {ttsTarget.requiresModel ? "TTS model" : "TTS model (optional)"}
+            </span>
             <Input
-              value={voice.ttsModel}
-              placeholder="Load in Settings → Voice"
-              onChange={(e) => onSave({ ttsModel: e.target.value })}
+              value={ttsModelDraft}
+              placeholder={ttsTarget.requiresModel ? "Enter model ID" : "Optional"}
+              onChange={(e) => setTtsModelDraft(e.target.value)}
+              onBlur={() => {
+                if (ttsModelDraft !== voice.ttsModel) onSave({ ttsModel: ttsModelDraft.trim() });
+              }}
             />
           </label>
         )}
         <label className="field">
           <span className="field-label">Listen with</span>
           <SelectField
-            value={voice.sttProvider}
-            onChange={(sttProvider) =>
-              onSave({ sttProvider: sttProvider as AiVoiceConfig["sttProvider"] })
-            }
+            value={sttSelection}
+            onChange={(selection) => onSave(voicePatchForSelection(selection, providers, "stt"))}
             ariaLabel="STT provider"
-            options={[
-              { value: "browser", label: "Browser Native" },
-              { value: "openai", label: "OpenAI" },
-              { value: "openai-compatible", label: "OpenAI-Compatible" },
-            ]}
+            options={providerOptions}
           />
         </label>
-        {voice.sttProvider !== "browser" && (
+        {sttTarget.adapter !== "browser" && (
           <label className="field">
             <span className="field-label">STT model</span>
             <Input
-              value={voice.sttModel}
-              placeholder="Load in Settings → Voice"
-              onChange={(e) => onSave({ sttModel: e.target.value })}
+              value={sttModelDraft}
+              placeholder="Enter model ID"
+              onChange={(e) => setSttModelDraft(e.target.value)}
+              onBlur={() => {
+                if (sttModelDraft !== voice.sttModel) onSave({ sttModel: sttModelDraft.trim() });
+              }}
             />
           </label>
         )}
@@ -384,8 +415,9 @@ function VoiceQuickSwitch({
         />
       </div>
       <div className="field-hint">
-        {providers.length} provider{providers.length === 1 ? "" : "s"} configured · full controls in
-        Settings → AI &amp; Voice
+        {ttsTarget.linkedProvider
+          ? `Inheriting ${ttsTarget.linkedProvider.name} credentials · full controls in Settings → AI & Voice`
+          : `${providers.length} provider${providers.length === 1 ? "" : "s"} configured · full controls in Settings → AI & Voice`}
       </div>
     </div>
   );
@@ -773,7 +805,12 @@ export function AiWorkspace({
             }
           >
             {voice && (
-              <VoiceQuickSwitch voice={voice} providers={providers} onSave={patchVoice} />
+              <VoiceQuickSwitch
+                voice={voice}
+                providers={providers}
+                activeProviderId={config?.activeProviderId}
+                onSave={patchVoice}
+              />
             )}
           </Popover>
 

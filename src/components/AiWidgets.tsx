@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { useToast } from "@halo-ds/react";
 import * as api from "../lib/api";
@@ -19,7 +19,16 @@ import {
   type ProviderCatalogEntry,
   type ProviderCategory,
 } from "../lib/providerCatalog";
-import { listBrowserVoices, onBrowserVoicesChanged, speakText } from "../lib/voiceEngine";
+import {
+  listBrowserVoices,
+  onBrowserVoicesChanged,
+  resolveVoiceTarget,
+  speakText,
+  startListening,
+  type ListenHandle,
+  type SpeakHandle,
+  type VoiceAudioAdapter,
+} from "../lib/voiceEngine";
 import { ProviderLogo } from "./ProviderLogo";
 import {
   Button,
@@ -48,6 +57,7 @@ export function fmtLatency(ms: number) {
 
 const OPENAI_VOICES = ["alloy", "ash", "coral", "echo", "nova", "onyx", "sage", "shimmer"];
 const GEMINI_VOICES = ["Kore", "Puck", "Charon", "Fenrir", "Aoede"];
+const XAI_VOICES = ["eve", "ara", "rex", "sal", "leo"];
 
 const QUICK_ADD_IDS = [
   "anthropic",
@@ -60,20 +70,144 @@ const QUICK_ADD_IDS = [
   "ollama",
 ];
 
-export function defaultVoiceForProvider(provider: AiVoiceConfig["ttsProvider"]): {
-  ttsModel: string;
-  ttsVoice: string;
-} {
-  switch (provider) {
+export function defaultVoiceForAdapter(adapter: VoiceAudioAdapter): string {
+  switch (adapter) {
     case "google":
-      return { ttsModel: "", ttsVoice: "Kore" };
+      return "Kore";
+    case "xai":
+      return "eve";
+    case "minimax":
+      return "English_Graceful_Lady";
     case "openai":
-      return { ttsModel: "", ttsVoice: "nova" };
-    case "openai-compatible":
-      return { ttsModel: "", ttsVoice: "alloy" };
+      return "nova";
     default:
-      return { ttsModel: "", ttsVoice: "" };
+      return "";
   }
+}
+
+export function buildVoiceProviderOptions(
+  providers: AiProviderConfig[],
+): { value: string; label: string }[] {
+  const connected = providers.filter((p) => p.kind !== "anthropic");
+  const hasOpenAi = connected.some((p) => p.kind === "openai");
+  const hasGoogle = connected.some((p) => p.kind === "google");
+  const options: { value: string; label: string }[] = [
+    { value: "browser", label: "Browser Native (System)" },
+    ...connected.map((p) => ({
+      value: `provider:${p.id}`,
+      label: `${p.name} (connected)`,
+    })),
+  ];
+  if (!hasOpenAi) options.push({ value: "custom:openai", label: "OpenAI (standalone)" });
+  if (!hasGoogle) options.push({ value: "custom:google", label: "Google Gemini (standalone)" });
+  options.push({ value: "custom:openai-compatible", label: "Custom OpenAI-Compatible" });
+  return options;
+}
+
+export function selectedVoiceOptionValue(
+  voice: AiVoiceConfig,
+  providers: AiProviderConfig[],
+  mode: "tts" | "stt",
+  activeProviderId?: string,
+): string {
+  const target = resolveVoiceTarget(voice, providers, mode, activeProviderId);
+  if (target.adapter === "browser") return "browser";
+  if (target.linkedProvider) return `provider:${target.linkedProvider.id}`;
+  return `custom:${target.providerKind}`;
+}
+
+export function voicePatchForSelection(
+  selection: string,
+  providers: AiProviderConfig[],
+  mode: "tts" | "stt",
+): Partial<AiVoiceConfig> {
+  if (selection === "browser") {
+    return mode === "tts"
+      ? {
+          ttsProvider: "browser",
+          ttsProviderId: "",
+          ttsModel: "",
+          ttsVoice: "",
+          ttsBaseUrl: "",
+          ttsApiKey: "",
+        }
+      : {
+          sttProvider: "browser",
+          sttProviderId: "",
+          sttModel: "",
+          sttBaseUrl: "",
+          sttApiKey: "",
+        };
+  }
+
+  if (selection.startsWith("provider:")) {
+    const id = selection.slice("provider:".length);
+    const provider = providers.find((p) => p.id === id);
+    const kind =
+      provider?.kind === "google"
+        ? "google"
+        : provider?.kind === "openai"
+          ? "openai"
+          : "openai-compatible";
+    const previewVoice: AiVoiceConfig = {
+      ttsProvider: kind,
+      ttsProviderId: id,
+      ttsModel: "",
+      ttsVoice: "",
+      ttsBaseUrl: "",
+      ttsApiKey: "",
+      ttsRate: 1,
+      sttProvider: kind,
+      sttProviderId: id,
+      sttModel: "",
+      sttBaseUrl: "",
+      sttApiKey: "",
+      autoSpeakReplies: false,
+      autoSendVoice: true,
+    };
+    const adapter = resolveVoiceTarget(previewVoice, providers, mode).adapter;
+    return mode === "tts"
+      ? {
+          ttsProvider: kind,
+          ttsProviderId: id,
+          ttsModel: "",
+          ttsVoice: defaultVoiceForAdapter(adapter),
+          ttsBaseUrl: "",
+          ttsApiKey: "",
+        }
+      : {
+          sttProvider: kind,
+          sttProviderId: id,
+          sttModel: "",
+          sttBaseUrl: "",
+          sttApiKey: "",
+        };
+  }
+
+  const customKind = selection.slice("custom:".length) as "openai" | "google" | "openai-compatible";
+  const safeKind =
+    customKind === "google" || customKind === "openai" ? customKind : "openai-compatible";
+  return mode === "tts"
+    ? {
+        ttsProvider: safeKind,
+        ttsProviderId: "",
+        ttsModel: "",
+        ttsVoice:
+          safeKind === "google" ? "Kore" : safeKind === "openai" ? "nova" : "alloy",
+      }
+    : {
+        sttProvider: safeKind,
+        sttProviderId: "",
+        sttModel: "",
+      };
+}
+
+function adapterEndpointHint(adapter: VoiceAudioAdapter, mode: "tts" | "stt"): string {
+  if (adapter === "google") return "Gemini generateContent";
+  if (adapter === "minimax") return mode === "tts" ? "MiniMax /v1/t2a_v2" : "MiniMax /v1/speech_to_text";
+  if (adapter === "xai") return mode === "tts" ? "xAI /v1/tts" : "/audio/transcriptions";
+  if (adapter === "elevenlabs") return "ElevenLabs /text-to-speech";
+  return mode === "tts" ? "/audio/speech" : "/audio/transcriptions";
 }
 
 function DeferredInput({
@@ -668,9 +802,15 @@ export function AiProvidersCard() {
 
   const removeProvider = (id: string) => {
     const remaining = config.providers.filter((p) => p.id !== id);
+    const nextVoice: AiVoiceConfig = {
+      ...config.voice,
+      ...(config.voice.ttsProviderId === id ? { ttsProviderId: "" } : {}),
+      ...(config.voice.sttProviderId === id ? { sttProviderId: "" } : {}),
+    };
     update({
       ...config,
       providers: remaining,
+      voice: nextVoice,
       activeProviderId:
         config.activeProviderId === id
           ? remaining.find((p) => isProviderReady(p))?.id ?? remaining[0]?.id ?? ""
@@ -957,114 +1097,261 @@ export function AiProvidersCard() {
 function VoiceSettingsCardInner({ config }: { config: AiConfig }) {
   const save = useSaveAiConfig();
   const { toast } = useToast();
-  const voice = config.voice;
+
+  // Synchronized live draft eliminates stale-closure races between typing and clicking Load/Test.
+  const [draft, setDraft] = useState<AiVoiceConfig>(() => config.voice);
+  const draftRef = useRef<AiVoiceConfig>(config.voice);
+  const configRef = useRef<AiConfig>(config);
+  configRef.current = config;
+  const saveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const dirtyRef = useRef(false);
+
   const [voices, setVoices] = useState<SpeechSynthesisVoice[]>(() => listBrowserVoices());
   const [ttsModels, setTtsModels] = useState<string[]>([]);
   const [sttModels, setSttModels] = useState<string[]>([]);
   const [loadingTts, setLoadingTts] = useState(false);
   const [loadingStt, setLoadingStt] = useState(false);
   const [testing, setTesting] = useState(false);
+  const [testingMic, setTestingMic] = useState(false);
+  const [transcribingMic, setTranscribingMic] = useState(false);
+  const [micResult, setMicResult] = useState("");
+  const [voiceError, setVoiceError] = useState("");
+  const [showTtsOverrides, setShowTtsOverrides] = useState(false);
+  const [showSttOverrides, setShowSttOverrides] = useState(false);
+  const speakRef = useRef<SpeakHandle | null>(null);
+  const listenRef = useRef<ListenHandle | null>(null);
+
+  useEffect(() => {
+    if (!dirtyRef.current) {
+      draftRef.current = config.voice;
+      setDraft(config.voice);
+    }
+  }, [config.voice]);
 
   useEffect(() => {
     setVoices(listBrowserVoices());
     return onBrowserVoicesChanged(setVoices);
   }, []);
 
-  const patchVoice = (patch: Partial<AiVoiceConfig>) =>
-    save.mutate({ ...config, schemaVersion: 2, voice: { ...voice, ...patch } });
+  useEffect(() => {
+    return () => {
+      if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
+      speakRef.current?.stop();
+      listenRef.current?.cancel();
+    };
+  }, []);
 
-  const resolveKeyFor = (kind: "openai" | "google" | "openai-compatible", override: string) => {
-    if (override.trim()) return override.trim();
-    const match =
-      config.providers.find((p) => p.kind === kind && p.enabled && p.apiKey.trim()) ??
-      config.providers.find((p) => p.kind === kind && p.apiKey.trim());
-    return match?.apiKey.trim() ?? "";
+  const persistNow = (nextVoice: AiVoiceConfig) => {
+    if (saveTimerRef.current) {
+      clearTimeout(saveTimerRef.current);
+      saveTimerRef.current = null;
+    }
+    dirtyRef.current = false;
+    save.mutate({ ...configRef.current, schemaVersion: 2, voice: nextVoice });
   };
 
-  const resolveBaseFor = (kind: "openai" | "google" | "openai-compatible", override: string) => {
-    if (override.trim()) return override.trim();
-    const match =
-      config.providers.find((p) => p.kind === kind && p.enabled && p.baseUrl.trim()) ??
-      config.providers.find((p) => p.kind === kind && p.baseUrl.trim());
-    return match?.baseUrl.trim() ?? "";
+  const updateVoice = (patch: Partial<AiVoiceConfig>, immediate = false) => {
+    const next: AiVoiceConfig = { ...draftRef.current, ...patch };
+    draftRef.current = next;
+    setDraft(next);
+    setVoiceError("");
+    if (immediate) {
+      persistNow(next);
+      return;
+    }
+    dirtyRef.current = true;
+    if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
+    saveTimerRef.current = setTimeout(() => persistNow(draftRef.current), 280);
   };
+
+  const flushDraft = (): AiVoiceConfig => {
+    if (dirtyRef.current) persistNow(draftRef.current);
+    return draftRef.current;
+  };
+
+  const providerOptions = useMemo(
+    () => buildVoiceProviderOptions(config.providers),
+    [config.providers],
+  );
+
+  const ttsTarget = useMemo(
+    () => resolveVoiceTarget(draft, config.providers, "tts", config.activeProviderId),
+    [draft, config.providers, config.activeProviderId],
+  );
+  const sttTarget = useMemo(
+    () => resolveVoiceTarget(draft, config.providers, "stt", config.activeProviderId),
+    [draft, config.providers, config.activeProviderId],
+  );
+
+  const ttsSelection = selectedVoiceOptionValue(
+    draft,
+    config.providers,
+    "tts",
+    config.activeProviderId,
+  );
+  const sttSelection = selectedVoiceOptionValue(
+    draft,
+    config.providers,
+    "stt",
+    config.activeProviderId,
+  );
+
+  const ttsOverridesVisible =
+    ttsTarget.adapter !== "browser" &&
+    (!ttsTarget.linkedProvider ||
+      showTtsOverrides ||
+      Boolean(draft.ttsBaseUrl.trim() || draft.ttsApiKey.trim()));
+
+  const sttOverridesVisible =
+    sttTarget.adapter !== "browser" &&
+    (!sttTarget.linkedProvider ||
+      showSttOverrides ||
+      Boolean(draft.sttBaseUrl.trim() || draft.sttApiKey.trim()));
 
   const loadTtsModels = async () => {
-    if (voice.ttsProvider === "browser") return;
+    const live = flushDraft();
+    const target = resolveVoiceTarget(live, config.providers, "tts", config.activeProviderId);
+    if (target.adapter === "browser" || !target.supportsModelDiscovery) return;
     setLoadingTts(true);
+    setVoiceError("");
     try {
       const found = await discoverVoiceModels({
-        provider: voice.ttsProvider,
+        provider: target.providerKind === "google" ? "google" : target.providerKind === "openai" ? "openai" : "openai-compatible",
         mode: "tts",
-        baseUrl: resolveBaseFor(voice.ttsProvider, voice.ttsBaseUrl),
-        apiKey: resolveKeyFor(voice.ttsProvider, voice.ttsApiKey),
+        baseUrl: target.baseUrl,
+        apiKey: target.apiKey,
       });
       setTtsModels(found);
-      if (!voice.ttsModel || !found.includes(voice.ttsModel)) {
-        patchVoice({ ttsModel: found[0] });
+      if (!live.ttsModel.trim() && found[0]) {
+        updateVoice({ ttsModel: found[0] }, true);
       }
       toast({ type: "success", title: `Loaded ${found.length} TTS model(s)` });
     } catch (err) {
-      toast({
-        type: "error",
-        title: "Could not load TTS models",
-        description: String((err as Error)?.message ?? err),
-      });
+      const msg = String((err as Error)?.message ?? err);
+      setVoiceError(msg);
+      toast({ type: "error", title: "Could not load TTS models", description: msg });
     } finally {
       setLoadingTts(false);
     }
   };
 
   const loadSttModels = async () => {
-    if (voice.sttProvider === "browser") return;
+    const live = flushDraft();
+    const target = resolveVoiceTarget(live, config.providers, "stt", config.activeProviderId);
+    if (target.adapter === "browser" || !target.supportsModelDiscovery) return;
     setLoadingStt(true);
+    setVoiceError("");
     try {
       const found = await discoverVoiceModels({
-        provider: voice.sttProvider,
+        provider: target.providerKind === "google" ? "google" : target.providerKind === "openai" ? "openai" : "openai-compatible",
         mode: "stt",
-        baseUrl: resolveBaseFor(voice.sttProvider, voice.sttBaseUrl),
-        apiKey: resolveKeyFor(voice.sttProvider, voice.sttApiKey),
+        baseUrl: target.baseUrl,
+        apiKey: target.apiKey,
       });
       setSttModels(found);
-      if (!voice.sttModel || !found.includes(voice.sttModel)) {
-        patchVoice({ sttModel: found[0] });
+      if (!live.sttModel.trim() && found[0]) {
+        updateVoice({ sttModel: found[0] }, true);
       }
       toast({ type: "success", title: `Loaded ${found.length} STT model(s)` });
     } catch (err) {
-      toast({
-        type: "error",
-        title: "Could not load STT models",
-        description: String((err as Error)?.message ?? err),
-      });
+      const msg = String((err as Error)?.message ?? err);
+      setVoiceError(msg);
+      toast({ type: "error", title: "Could not load STT models", description: msg });
     } finally {
       setLoadingStt(false);
     }
   };
 
-  const voiceOptions =
-    voice.ttsProvider === "browser"
-      ? [
-          { value: "", label: "System default" },
-          ...voices.map((v) => ({ value: v.name, label: `${v.name} (${v.lang})` })),
-        ]
-      : voice.ttsProvider === "google"
+  const browserVoiceOptions = useMemo(
+    () => [
+      { value: "", label: "System default" },
+      ...voices.map((v) => ({ value: v.name, label: `${v.name} (${v.lang})` })),
+    ],
+    [voices],
+  );
+
+  const presetVoiceOptions =
+    ttsTarget.adapter === "browser"
+      ? browserVoiceOptions
+      : ttsTarget.adapter === "google"
         ? GEMINI_VOICES.map((v) => ({ value: v, label: v }))
-        : OPENAI_VOICES.map((v) => ({ value: v, label: v }));
+        : ttsTarget.adapter === "xai"
+          ? XAI_VOICES.map((v) => ({ value: v, label: v }))
+          : ttsTarget.providerKind === "openai" && !draft.ttsBaseUrl.trim()
+            ? OPENAI_VOICES.map((v) => ({ value: v, label: v }))
+            : null;
 
   const testVoice = () => {
+    if (testing) {
+      speakRef.current?.stop();
+      speakRef.current = null;
+      setTesting(false);
+      return;
+    }
+    const live = flushDraft();
+    setVoiceError("");
     setTesting(true);
-    speakText(
+    speakRef.current = speakText(
       "This is how your AI Coach will sound when it reads replies aloud.",
-      voice,
+      live,
       config.providers,
       {
-        onEnd: () => setTesting(false),
-        onError: (message) => {
+        onEnd: () => {
+          speakRef.current = null;
           setTesting(false);
+        },
+        onError: (message) => {
+          speakRef.current = null;
+          setTesting(false);
+          setVoiceError(message);
           toast({ type: "error", title: "Voice test failed", description: message });
         },
       },
     );
+  };
+
+  const testMic = async () => {
+    if (testingMic) {
+      setTestingMic(false);
+      setTranscribingMic(true);
+      try {
+        const text = await listenRef.current?.stop();
+        listenRef.current = null;
+        setTranscribingMic(false);
+        if (text?.trim()) {
+          setMicResult(text.trim());
+          toast({ type: "success", title: "STT test succeeded", description: text.trim().slice(0, 120) });
+        } else {
+          setMicResult("(No speech detected)");
+        }
+      } catch (err) {
+        listenRef.current = null;
+        setTranscribingMic(false);
+        const msg = String((err as Error)?.message ?? err);
+        setVoiceError(msg);
+        toast({ type: "error", title: "STT test failed", description: msg });
+      }
+      return;
+    }
+    const live = flushDraft();
+    setVoiceError("");
+    setMicResult("");
+    listenRef.current = startListening(live, config.providers, {
+      onStart: () => setTestingMic(true),
+      onInterim: (text) => setMicResult(text),
+      onAutoEnd: (text) => {
+        listenRef.current = null;
+        setTestingMic(false);
+        if (text.trim()) setMicResult(text.trim());
+      },
+      onError: (message) => {
+        listenRef.current = null;
+        setTestingMic(false);
+        setTranscribingMic(false);
+        setVoiceError(message);
+        toast({ type: "error", title: "STT test failed", description: message });
+      },
+    });
   };
 
   return (
@@ -1073,98 +1360,175 @@ function VoiceSettingsCardInner({ config }: { config: AiConfig }) {
         <Icon name="volume" size={18} className="icon-muted" />
         <span className="card-title">Voice</span>
         <span className="spacer" />
-        <Button size="sm" variant="secondary" onClick={testVoice} disabled={testing}>
-          <Icon name="volume" size={13} /> {testing ? "Speaking…" : "Test voice"}
+        <Button
+          size="sm"
+          variant={testingMic ? "primary" : "secondary"}
+          disabled={transcribingMic}
+          onClick={() => void testMic()}
+        >
+          <Icon name={testingMic ? "square" : "mic"} size={13} />{" "}
+          {transcribingMic ? "Transcribing…" : testingMic ? "Stop mic" : "Test mic"}
+        </Button>
+        <Button size="sm" variant={testing ? "primary" : "secondary"} onClick={testVoice}>
+          <Icon name={testing ? "square" : "volume"} size={13} />{" "}
+          {testing ? "Stop test" : "Test voice"}
         </Button>
       </div>
       <div className="card-body pad">
         <div className="voice-section-head">
           <span className="field-label">Text to speech</span>
-          {voice.ttsProvider !== "browser" && (
+          {ttsTarget.supportsModelDiscovery && (
             <Button size="sm" variant="ghost" disabled={loadingTts} onClick={() => void loadTtsModels()}>
-              <Icon name="refresh" size={13} /> {loadingTts ? "Loading…" : "Load voice models"}
+              <Icon name="refresh" size={13} /> {loadingTts ? "Loading…" : "Load models"}
             </Button>
           )}
         </div>
+
+        {ttsTarget.linkedProvider && (
+          <div className="voice-inherited-bar">
+            <ProviderLogo
+              catalogId={ttsTarget.linkedProvider.catalogId}
+              kind={ttsTarget.linkedProvider.kind}
+              size={14}
+              framed={false}
+            />
+            <span className="voice-inherited-copy">
+              Inheriting {ttsTarget.inheritedKey ? "API key & " : ""}endpoint from{" "}
+              <strong>{ttsTarget.linkedProvider.name}</strong>
+              {ttsTarget.baseUrl ? ` · ${ttsTarget.baseUrl}` : ""} (
+              {adapterEndpointHint(ttsTarget.adapter, "tts")})
+            </span>
+            <Button
+              size="sm"
+              variant="ghost"
+              onClick={() => setShowTtsOverrides((v) => !v)}
+            >
+              {ttsOverridesVisible ? "Hide overrides" : "Override key / URL"}
+            </Button>
+          </div>
+        )}
+
         <div className="voice-grid">
           <Field label="TTS provider">
             <SelectField
-              value={voice.ttsProvider}
-              onChange={(nextProvider) => {
-                const ttsProvider = nextProvider as AiVoiceConfig["ttsProvider"];
+              value={ttsSelection}
+              onChange={(selection) => {
                 setTtsModels([]);
-                patchVoice({ ttsProvider, ...defaultVoiceForProvider(ttsProvider) });
+                setShowTtsOverrides(false);
+                updateVoice(voicePatchForSelection(selection, config.providers, "tts"), true);
               }}
               ariaLabel="TTS provider"
-              options={[
-                { value: "browser", label: "Browser Native (System)" },
-                { value: "openai", label: "OpenAI" },
-                { value: "google", label: "Google Gemini" },
-                { value: "openai-compatible", label: "OpenAI-Compatible" },
-              ]}
+              options={providerOptions}
             />
           </Field>
-          {voice.ttsProvider !== "browser" && (
-            <Field label="TTS model">
-              {ttsModels.length > 0 ? (
-                <ComboboxField
-                  value={voice.ttsModel}
-                  onChange={(ttsModel) => patchVoice({ ttsModel })}
-                  options={ttsModels.map((m) => ({ value: m, label: m }))}
-                  placeholder="Select discovered TTS model"
-                  ariaLabel="TTS model"
-                />
-              ) : (
-                <DeferredInput
-                  value={voice.ttsModel}
-                  placeholder="Click 'Load voice models' or enter ID"
-                  onCommit={(ttsModel) => patchVoice({ ttsModel: ttsModel.trim() })}
-                />
-              )}
+
+          {ttsTarget.adapter !== "browser" && (
+            <Field
+              label={ttsTarget.requiresModel ? "TTS model ID" : "TTS model ID (optional)"}
+              hint={
+                ttsTarget.adapter === "xai"
+                  ? "Optional — xAI /v1/tts works with just a voice ID"
+                  : ttsTarget.adapter === "minimax"
+                    ? "Enter model ID directly (not exposed on /models)"
+                    : "Type any model ID directly — discovery is optional"
+              }
+            >
+              <Input
+                value={draft.ttsModel}
+                placeholder={
+                  ttsTarget.adapter === "xai"
+                    ? "Optional"
+                    : "Enter model ID directly"
+                }
+                aria-label="TTS model ID"
+                onChange={(e) => updateVoice({ ttsModel: e.target.value })}
+                onBlur={() => flushDraft()}
+              />
             </Field>
           )}
-          <Field label="Voice">
-            {voice.ttsProvider === "openai-compatible" ? (
-              <DeferredInput
-                value={voice.ttsVoice}
-                placeholder="Voice ID"
-                onCommit={(ttsVoice) => patchVoice({ ttsVoice: ttsVoice.trim() })}
+
+          {ttsModels.length > 0 && ttsTarget.adapter !== "browser" && (
+            <Field label={`Discovered models (${ttsModels.length})`}>
+              <ComboboxField
+                value={ttsModels.includes(draft.ttsModel) ? draft.ttsModel : ""}
+                onChange={(ttsModel) => updateVoice({ ttsModel }, true)}
+                options={ttsModels.map((m) => ({ value: m, label: m }))}
+                placeholder="Quick-pick a discovered model…"
+                ariaLabel="Discovered TTS models"
+              />
+            </Field>
+          )}
+
+          <Field label={ttsTarget.adapter === "elevenlabs" ? "Voice ID" : "Voice"}>
+            {presetVoiceOptions ? (
+              <SelectField
+                value={draft.ttsVoice}
+                onChange={(ttsVoice) => updateVoice({ ttsVoice }, true)}
+                ariaLabel="TTS voice"
+                options={presetVoiceOptions}
               />
             ) : (
-              <SelectField
-                value={voice.ttsVoice}
-                onChange={(ttsVoice) => patchVoice({ ttsVoice })}
-                ariaLabel="TTS voice"
-                options={voiceOptions}
+              <Input
+                value={draft.ttsVoice}
+                placeholder={
+                  ttsTarget.adapter === "minimax"
+                    ? "e.g. English_Graceful_Lady"
+                    : ttsTarget.adapter === "elevenlabs"
+                      ? "ElevenLabs voice ID"
+                      : "e.g. alloy"
+                }
+                aria-label="TTS voice"
+                onChange={(e) => updateVoice({ ttsVoice: e.target.value })}
+                onBlur={() => flushDraft()}
               />
             )}
           </Field>
-          <Field label={`Speech speed · ${voice.ttsRate.toFixed(1)}×`}>
+
+          <Field label={`Speech speed · ${draft.ttsRate.toFixed(1)}×`}>
             <Input
               type="range"
               min={0.5}
               max={2}
               step={0.1}
-              value={voice.ttsRate}
+              value={draft.ttsRate}
               aria-label="Speech speed"
-              onChange={(e) => patchVoice({ ttsRate: Number(e.target.value) })}
+              onChange={(e) => updateVoice({ ttsRate: Number(e.target.value) })}
+              onMouseUp={() => flushDraft()}
+              onTouchEnd={() => flushDraft()}
             />
           </Field>
-          {voice.ttsProvider !== "browser" && (
+
+          {ttsOverridesVisible && (
             <>
-              <Field label="Custom base URL" hint="Optional override">
-                <DeferredInput
-                  value={voice.ttsBaseUrl}
-                  placeholder="Uses provider base URL"
-                  onCommit={(ttsBaseUrl) => patchVoice({ ttsBaseUrl: ttsBaseUrl.trim() })}
+              <Field
+                label={ttsTarget.linkedProvider ? "Override base URL" : "Base URL"}
+                hint={
+                  ttsTarget.linkedProvider
+                    ? `Leave blank to inherit ${ttsTarget.linkedProvider.name}`
+                    : "Provider base URL (e.g. https://api.openai.com/v1)"
+                }
+              >
+                <Input
+                  value={draft.ttsBaseUrl}
+                  placeholder={ttsTarget.baseUrl || "https://…/v1"}
+                  onChange={(e) => updateVoice({ ttsBaseUrl: e.target.value })}
+                  onBlur={() => flushDraft()}
                 />
               </Field>
-              <Field label="Custom API key" hint="Optional override">
-                <DeferredInput
+              <Field
+                label={ttsTarget.linkedProvider ? "Override API key" : "API key"}
+                hint={
+                  ttsTarget.linkedProvider
+                    ? `Leave blank to inherit ${ttsTarget.linkedProvider.name}`
+                    : "Encrypted locally outside SQLite backups"
+                }
+              >
+                <Input
                   type="password"
-                  value={voice.ttsApiKey}
-                  placeholder="Uses provider key"
-                  onCommit={(ttsApiKey) => patchVoice({ ttsApiKey: ttsApiKey.trim() })}
+                  value={draft.ttsApiKey}
+                  placeholder={ttsTarget.inheritedKey ? "Inherited from provider" : "Paste API key"}
+                  onChange={(e) => updateVoice({ ttsApiKey: e.target.value })}
+                  onBlur={() => flushDraft()}
                 />
               </Field>
             </>
@@ -1173,68 +1537,128 @@ function VoiceSettingsCardInner({ config }: { config: AiConfig }) {
 
         <div className="voice-section-head" style={{ marginTop: 10 }}>
           <span className="field-label">Speech to text</span>
-          {voice.sttProvider !== "browser" && (
+          {sttTarget.supportsModelDiscovery && (
             <Button size="sm" variant="ghost" disabled={loadingStt} onClick={() => void loadSttModels()}>
-              <Icon name="refresh" size={13} /> {loadingStt ? "Loading…" : "Load STT models"}
+              <Icon name="refresh" size={13} /> {loadingStt ? "Loading…" : "Load models"}
             </Button>
           )}
         </div>
+
+        {sttTarget.linkedProvider && (
+          <div className="voice-inherited-bar">
+            <ProviderLogo
+              catalogId={sttTarget.linkedProvider.catalogId}
+              kind={sttTarget.linkedProvider.kind}
+              size={14}
+              framed={false}
+            />
+            <span className="voice-inherited-copy">
+              Inheriting {sttTarget.inheritedKey ? "API key & " : ""}endpoint from{" "}
+              <strong>{sttTarget.linkedProvider.name}</strong>
+              {sttTarget.baseUrl ? ` · ${sttTarget.baseUrl}` : ""} (
+              {adapterEndpointHint(sttTarget.adapter, "stt")})
+            </span>
+            <Button
+              size="sm"
+              variant="ghost"
+              onClick={() => setShowSttOverrides((v) => !v)}
+            >
+              {sttOverridesVisible ? "Hide overrides" : "Override key / URL"}
+            </Button>
+          </div>
+        )}
+
         <div className="voice-grid">
           <Field label="STT provider">
             <SelectField
-              value={voice.sttProvider}
-              onChange={(sttProvider) => {
+              value={sttSelection}
+              onChange={(selection) => {
                 setSttModels([]);
-                patchVoice({
-                  sttProvider: sttProvider as AiVoiceConfig["sttProvider"],
-                  sttModel: "",
-                });
+                setShowSttOverrides(false);
+                updateVoice(voicePatchForSelection(selection, config.providers, "stt"), true);
               }}
               ariaLabel="STT provider"
-              options={[
-                { value: "browser", label: "Browser Native (System)" },
-                { value: "openai", label: "OpenAI" },
-                { value: "openai-compatible", label: "OpenAI-Compatible" },
-              ]}
+              options={providerOptions}
             />
           </Field>
-          {voice.sttProvider !== "browser" && (
+
+          {sttTarget.adapter !== "browser" && (
+            <Field
+              label="STT model ID"
+              hint={
+                sttTarget.adapter === "minimax"
+                  ? "Enter MiniMax ASR model ID directly (uses /v1/speech_to_text)"
+                  : "Type any transcription model ID directly — discovery is optional"
+              }
+            >
+              <Input
+                value={draft.sttModel}
+                placeholder="Enter transcription model ID"
+                aria-label="STT model ID"
+                onChange={(e) => updateVoice({ sttModel: e.target.value })}
+                onBlur={() => flushDraft()}
+              />
+            </Field>
+          )}
+
+          {sttModels.length > 0 && sttTarget.adapter !== "browser" && (
+            <Field label={`Discovered models (${sttModels.length})`}>
+              <ComboboxField
+                value={sttModels.includes(draft.sttModel) ? draft.sttModel : ""}
+                onChange={(sttModel) => updateVoice({ sttModel }, true)}
+                options={sttModels.map((m) => ({ value: m, label: m }))}
+                placeholder="Quick-pick a discovered model…"
+                ariaLabel="Discovered STT models"
+              />
+            </Field>
+          )}
+
+          {sttOverridesVisible && (
             <>
-              <Field label="STT model">
-                {sttModels.length > 0 ? (
-                  <ComboboxField
-                    value={voice.sttModel}
-                    onChange={(sttModel) => patchVoice({ sttModel })}
-                    options={sttModels.map((m) => ({ value: m, label: m }))}
-                    placeholder="Select discovered STT model"
-                    ariaLabel="STT model"
-                  />
-                ) : (
-                  <DeferredInput
-                    value={voice.sttModel}
-                    placeholder="Click 'Load STT models' or enter ID"
-                    onCommit={(sttModel) => patchVoice({ sttModel: sttModel.trim() })}
-                  />
-                )}
-              </Field>
-              <Field label="Custom base URL" hint="Optional override">
-                <DeferredInput
-                  value={voice.sttBaseUrl}
-                  placeholder="Uses provider base URL"
-                  onCommit={(sttBaseUrl) => patchVoice({ sttBaseUrl: sttBaseUrl.trim() })}
+              <Field
+                label={sttTarget.linkedProvider ? "Override base URL" : "Base URL"}
+                hint={
+                  sttTarget.linkedProvider
+                    ? `Leave blank to inherit ${sttTarget.linkedProvider.name}`
+                    : "Provider base URL (e.g. https://api.groq.com/openai/v1)"
+                }
+              >
+                <Input
+                  value={draft.sttBaseUrl}
+                  placeholder={sttTarget.baseUrl || "https://…/v1"}
+                  onChange={(e) => updateVoice({ sttBaseUrl: e.target.value })}
+                  onBlur={() => flushDraft()}
                 />
               </Field>
-              <Field label="Custom API key" hint="Optional override">
-                <DeferredInput
+              <Field
+                label={sttTarget.linkedProvider ? "Override API key" : "API key"}
+                hint={
+                  sttTarget.linkedProvider
+                    ? `Leave blank to inherit ${sttTarget.linkedProvider.name}`
+                    : "Encrypted locally outside SQLite backups"
+                }
+              >
+                <Input
                   type="password"
-                  value={voice.sttApiKey}
-                  placeholder="Uses provider key"
-                  onCommit={(sttApiKey) => patchVoice({ sttApiKey: sttApiKey.trim() })}
+                  value={draft.sttApiKey}
+                  placeholder={sttTarget.inheritedKey ? "Inherited from provider" : "Paste API key"}
+                  onChange={(e) => updateVoice({ sttApiKey: e.target.value })}
+                  onBlur={() => flushDraft()}
                 />
               </Field>
             </>
           )}
         </div>
+
+        {micResult && (
+          <div className="voice-inherited-bar">
+            <Icon name="mic" size={13} />
+            <span className="voice-inherited-copy">
+              <strong>Transcript:</strong> {micResult}
+            </span>
+          </div>
+        )}
+        {voiceError && <div className="field-error">{voiceError}</div>}
 
         <div className="voice-toggles">
           <div className="setting-row">
@@ -1243,8 +1667,8 @@ function VoiceSettingsCardInner({ config }: { config: AiConfig }) {
               <span>Read every finished reply aloud with the chosen voice.</span>
             </div>
             <Switch
-              checked={voice.autoSpeakReplies}
-              onChange={(autoSpeakReplies) => patchVoice({ autoSpeakReplies })}
+              checked={draft.autoSpeakReplies}
+              onChange={(autoSpeakReplies) => updateVoice({ autoSpeakReplies }, true)}
               label="Auto-speak AI replies"
             />
           </div>
@@ -1254,8 +1678,8 @@ function VoiceSettingsCardInner({ config }: { config: AiConfig }) {
               <span>Send the transcript as soon as you stop recording.</span>
             </div>
             <Switch
-              checked={voice.autoSendVoice}
-              onChange={(autoSendVoice) => patchVoice({ autoSendVoice })}
+              checked={draft.autoSendVoice}
+              onChange={(autoSendVoice) => updateVoice({ autoSendVoice }, true)}
               label="Auto-send after voice input"
             />
           </div>
