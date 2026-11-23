@@ -1,8 +1,8 @@
 # My Planner
 
-Local-first desktop planner: tasks, time tracking and money tracking. No accounts, no server — SQLite on your computer, backups to a folder you choose (any folder, including one synced by Google Drive / OneDrive / Dropbox).
+Local-first desktop planner for tasks, goals, time tracking, money tracking, and direct Gemini AI coaching connected to your Google Account.
 
-Tauri 2 shell · React + TypeScript + Vite · TanStack Router / Query / Form · Zod · SQLite in Rust · Halo UI (`@halo-ds/react`).
+Tauri 2 shell · React 19 + TypeScript + Vite · TanStack Router / Query · SQLite in Rust · Halo UI (`@halo-ds/react`) · Google OAuth 2.0 (PKCE) & Gemini Interactions API (`v1`).
 
 ## Run
 
@@ -11,7 +11,7 @@ bun install
 bun run tauri dev
 ```
 
-Frontend only (browser, without the Rust backend): `bun run dev` — DB calls will fail there.
+Frontend-only browser preview (uses a local browser fallback store when outside Tauri): `bun run dev`.
 
 ## Package
 
@@ -21,40 +21,39 @@ bun run tauri build
 
 Installers land in `src-tauri/target/release/bundle/` (Windows: `msi/` and `nsis/`).
 
-Checks: `bun run typecheck`, `cd src-tauri && cargo check`.
+Checks: `bun run typecheck`, `bun run build`, `cd src-tauri && cargo test`.
+
+## Google Account & Direct AI Models
+
+Open **Settings → Google & AI** (or **AI Coach** / press `Ctrl+K`) to connect directly to Gemini models (`gemini-4-hydrogen`, `gemini-4-argon`, `gemini-4-neon`, `gemini-4-carbon`, `gemini-3.5-flash-lite`, plus live models discovered on your account):
+
+- **Sign in with Google (OAuth 2.0 + PKCE)**: Import your Google Cloud Desktop App `client_secret_*.json` (or enter Client ID / Secret), sign in through your system browser with automatic loopback callback and token refresh.
+- **Local Google CLI (ADC)**: One-click import if `gcloud` Application Default Credentials exist on your machine.
+- **Google AI Studio API Key**: Paste a Gemini API key directly (standalone or alongside your signed-in Google Account).
+
+OAuth tokens and API keys are stored encrypted at rest in `%APPDATA%\com.myplanner.app\MyPlanner\google-auth.enc` — separate from `my-planner.db` so database backups never include credentials.
+
+AI Coach uses the Gemini Interactions API (`POST https://generativelanguage.googleapis.com/v1/interactions`) with `store: false` and structured action proposals so you can preview and apply tasks, goals, reschedules, and money entries in one click.
 
 ## Where data lives
 
-- Database: `%APPDATA%\com.myplanner.app\MyPlanner\my-planner.db` (Tauri app-data dir; WAL mode).
-  macOS: `~/Library/Application Support/com.myplanner.app/MyPlanner/`, Linux: `~/.local/share/com.myplanner.app/MyPlanner/`.
-- Backups: the folder you pick in Settings / First run. Files are `my-planner-YYYYMMDD-HHMMSS.db`, or `.enc` when a passphrase is set. The last N (default 30) are kept.
-
-## How backups work
-
-- Snapshots use SQLite's backup API (`rusqlite::backup`), never a copy of the live file.
-- Written after edits settle (5s debounce), every 15 minutes when the DB changed, and on app exit.
-- Restore lists snapshots, warns that current data is replaced, keeps a `pre-restore-*.db` safety copy, then swaps the database in.
-- Optional passphrase encryption: AES-256-GCM with an Argon2id-derived key.
-- `BackupProvider` trait in `src-tauri/src/backup.rs` — a future Google Drive app-private provider implements `directory()`/`name()` and nothing else changes.
+- Database: `%APPDATA%\com.myplanner.app\MyPlanner\my-planner.db` (Tauri app-data dir; WAL mode, `PRAGMA user_version = 2`).
+- Backups: the folder you pick in Settings / First run. Managed snapshots are `my-planner-YYYYMMDD-HHMMSS.db` (or `.enc` when encrypted with AES-256-GCM + Argon2id). The last `N` (default 30) managed snapshots are kept; `pre-restore-*.db` safety copies and unrelated files are never pruned.
 
 ## Structure
 
 ```
 src/
-  App.tsx              router + weekly review notification
-  components/ui.tsx    layout, sidebar, timer bar, task card, quick add
-  pages/planning.tsx   Today, Goals + planner tabs, time editing
-  pages/money.tsx      Money and Reports
-  pages/setup.tsx      Settings and First run
-  lib/api.ts           invoke() wrappers + date/number helpers
-  lib/hooks.ts         TanStack Query hooks, debounced backup trigger
+  App.tsx                  router, AI drawer provider, Sunday weekly review
+  components/ui.tsx        shell, TopBar popovers, timer bar, TaskRow, QuickTask, modals
+  pages/planning.tsx       Today, Goals, Tomorrow/Week/Month calendar/Year planner, Themes
+  pages/money.tsx          Money ledger + edit modal + CSV export, Weekly/Monthly Reports
+  pages/ai.tsx             AI Coach page & Ctrl+K slide-over drawer with one-click actions
+  pages/setup.tsx          Settings (Google & AI, General, Currency, Data, Review) & First run
+  lib/api.ts               typed Tauri invoke wrappers + date helpers
+  lib/hooks.ts             TanStack Query hooks, optimistic timer & settings, toasts
 src-tauri/src/
-  db.rs                migrations, CRUD, timer, settings
-  backup.rs            snapshots, prune, restore, encryption
+  db.rs                    v1→v2 lossless migrations, FK cascades, CRUD, AI context snapshot
+  backup.rs                WAL-safe snapshots, managed pruning, encryption, safe restore
+  google_ai.rs             Google OAuth 2.0 PKCE loopback, ADC import, Gemini Interactions API v1
 ```
-
-Data model: `themes`, `goals` (horizon week/month/year, optional deadline, theme, status), `tasks` (nullable `goal_id`, required `theme_id`, `planned_date`), `time_entries` (`start_utc`, nullable `end_utc` — an open row is the running timer and survives restarts), `money_entries` (minor units, in/out, category, optional task or goal), `weekly_reports`, `settings`. Timestamps UTC ISO-8601, integer IDs, versioned migrations (`PRAGMA user_version`).
-
-## Design file
-
-The Pencil file "My Planner" was not reachable from this environment, so layout follows the brief and the component library's own tokens. Drop the exported colours/fonts/spacing into `src/index.css` (after the Halo styles import) to match the design exactly.
