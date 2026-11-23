@@ -38,16 +38,20 @@ export interface AiProviderConfig {
 }
 
 export type VoiceTtsProvider = "browser" | "openai" | "google" | "openai-compatible";
-export type VoiceSttProvider = "browser" | "openai" | "openai-compatible";
+export type VoiceSttProvider = "browser" | "openai" | "google" | "openai-compatible";
 
 export interface AiVoiceConfig {
   ttsProvider: VoiceTtsProvider;
+  /** Connected AiProviderConfig.id to inherit apiKey, baseUrl & adapter from (empty = custom/standalone). */
+  ttsProviderId?: string;
   ttsModel: string;
   ttsVoice: string;
   ttsBaseUrl: string;
   ttsApiKey: string;
   ttsRate: number;
   sttProvider: VoiceSttProvider;
+  /** Connected AiProviderConfig.id to inherit apiKey, baseUrl & adapter from (empty = custom/standalone). */
+  sttProviderId?: string;
   sttModel: string;
   sttBaseUrl: string;
   sttApiKey: string;

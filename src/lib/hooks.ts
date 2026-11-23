@@ -53,11 +53,18 @@ export function useSaveAiConfig() {
   const { toast } = useToast();
   return useMutation({
     mutationFn: (config: api.AiConfig) => api.aiSaveConfig(config),
+    onMutate: async (next) => {
+      await qc.cancelQueries({ queryKey: ["ai_config"] });
+      const previous = qc.getQueryData<api.AiConfig>(["ai_config"]);
+      qc.setQueryData(["ai_config"], next);
+      return { previous };
+    },
     onSuccess: (config) => {
       qc.setQueryData(["ai_config"], config);
       qc.invalidateQueries({ queryKey: ["ai_usage"] });
     },
-    onError: (err) => {
+    onError: (err, _vars, ctx) => {
+      if (ctx?.previous) qc.setQueryData(["ai_config"], ctx.previous);
       toast({ type: "error", title: "Could not save AI settings", description: errorMessage(err) });
     },
   });

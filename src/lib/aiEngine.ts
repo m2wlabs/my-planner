@@ -246,7 +246,7 @@ export async function discoverProviderModels(
   };
 }
 
-/** Dynamically discovers live TTS or STT audio models from the chosen voice endpoint. */
+/** Dynamically discovers live TTS or STT audio models from the chosen voice endpoint (optional helper). */
 export async function discoverVoiceModels(params: {
   provider: "openai" | "google" | "openai-compatible";
   mode: "tts" | "stt";
@@ -256,36 +256,68 @@ export async function discoverVoiceModels(params: {
   const key = params.apiKey?.trim() ?? "";
 
   if (params.provider === "google") {
-    if (!key) throw new Error("Add a Google Gemini API key to load Gemini voice models.");
-    const base = (params.baseUrl?.trim() || GOOGLE_BASE_URL).replace(/\/$/, "");
+    if (!key) throw new Error("Add a Google Gemini API key to load Gemini models.");
+    const base = (params.baseUrl?.trim() || GOOGLE_BASE_URL).replace(/\/+$/, "");
     const res = await fetch(`${base}/models?pageSize=200`, {
       headers: { "x-goog-api-key": key },
     });
     if (!res.ok) throw new Error(await readHttpError(res));
-    const body = (await res.json()) as { models?: { name?: string }[] };
-    const all = (body.models ?? []).map((m) => String(m.name ?? "").replace(/^models\//, "").trim()).filter(Boolean);
-    const ttsOnly = all.filter((id) => id.toLowerCase().includes("tts"));
-    const models = [...new Set(ttsOnly.length ? ttsOnly : all)];
+    const body = (await res.json()) as {
+      models?: { name?: string; supportedGenerationMethods?: string[] }[];
+    };
+    const all = (body.models ?? [])
+      .filter((m) => {
+        const methods = m.supportedGenerationMethods;
+        return !Array.isArray(methods) || methods.length === 0 || methods.includes("generateContent");
+      })
+      .map((m) => String(m.name ?? "").replace(/^models\//, "").trim())
+      .filter(Boolean);
+    const filtered =
+      params.mode === "tts"
+        ? all.filter((id) => /tts|audio/i.test(id))
+        : all.filter((id) => /gemini/i.test(id) && !/embedding|tts|imagen|veo/i.test(id));
+    const models = [...new Set(filtered.length ? filtered : all)];
     if (!models.length) throw new Error("No Gemini audio models returned.");
     return models;
   }
 
-  const base = (params.baseUrl?.trim() || OPENAI_BASE_URL).replace(/\/$/, "");
+  const base = (params.baseUrl?.trim() || (params.provider === "openai" ? OPENAI_BASE_URL : ""))
+    .replace(/\/+$/, "")
+    .replace(/\/(audio\/speech|audio\/transcriptions|t2a_v2|tts|chat\/completions|models)$/i, "")
+    .replace(/\/+$/, "");
+  if (!base) {
+    throw new Error("Select a connected AI provider or enter a Base URL before loading models.");
+  }
   if (params.provider === "openai" && !key) {
     throw new Error("Add an OpenAI API key to load audio models.");
   }
   const res = await fetch(`${base}/models`, {
     headers: key ? { Authorization: `Bearer ${key}` } : {},
   });
+  if (res.status === 404) {
+    throw new Error(
+      `This endpoint does not expose ${base}/models (HTTP 404). That's normal for some audio APIs — enter the model ID directly instead.`,
+    );
+  }
   if (!res.ok) throw new Error(await readHttpError(res));
-  const body = (await res.json()) as { data?: { id?: string }[] };
-  const all = [...new Set((body.data ?? []).map((m) => String(m.id ?? "").trim()).filter(Boolean))];
+  const body = (await res.json()) as {
+    data?: { id?: string }[];
+    models?: { id?: string; name?: string }[];
+  };
+  const raw = Array.isArray(body.data)
+    ? body.data.map((m) => String(m.id ?? "").trim())
+    : Array.isArray(body.models)
+      ? body.models.map((m) => String(m.id ?? m.name ?? "").trim())
+      : [];
+  const all = [...new Set(raw.filter(Boolean))];
   const filtered =
     params.mode === "tts"
-      ? all.filter((id) => /tts|speech|kokoro|audio/i.test(id))
-      : all.filter((id) => /whisper|transcribe|stt|asr/i.test(id));
+      ? all.filter((id) => /tts|speech|kokoro|piper|audio|voice|orpheus|playai/i.test(id))
+      : all.filter((id) => /whisper|transcribe|stt|asr|voxtral/i.test(id));
   const result = (filtered.length ? filtered : all).sort((a, b) => a.localeCompare(b));
-  if (!result.length) throw new Error("No audio models returned by this endpoint.");
+  if (!result.length) {
+    throw new Error("No models were returned by /models — enter the model ID directly.");
+  }
   return result;
 }
 
