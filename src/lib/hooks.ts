@@ -37,21 +37,74 @@ export const useTimeEntries = () => useTable("time_entries");
 export const useMoney = () => useTable("money_entries");
 export const useWeeklyReports = () => useTable("weekly_reports");
 export const useAiMessages = () => useTable("ai_messages");
+export const useRoutines = () => useTable("routines");
+export const useRoutineLogs = () => useTable("routine_logs");
 
 export function useSettings() {
   return useQuery({ queryKey: ["settings"], queryFn: api.getSettings });
 }
 
-export function useGoogleAuth() {
-  return useQuery({ queryKey: ["google_auth"], queryFn: api.googleAuthStatus });
+export function useAiConfig() {
+  return useQuery({ queryKey: ["ai_config"], queryFn: api.aiGetConfig, staleTime: 5 * 60_000 });
 }
 
-export function useAiModels() {
-  const { data: auth } = useGoogleAuth();
-  return useQuery({
-    queryKey: ["ai_models", auth?.connected ?? false, auth?.active_transport ?? "none"],
-    queryFn: api.googleListModels,
-    staleTime: 5 * 60_000,
+export function useSaveAiConfig() {
+  const qc = useQueryClient();
+  const { toast } = useToast();
+  return useMutation({
+    mutationFn: (config: api.AiConfig) => api.aiSaveConfig(config),
+    onSuccess: (config) => {
+      qc.setQueryData(["ai_config"], config);
+      qc.invalidateQueries({ queryKey: ["ai_usage"] });
+    },
+    onError: (err) => {
+      toast({ type: "error", title: "Could not save AI settings", description: errorMessage(err) });
+    },
+  });
+}
+
+export function useAiUsage() {
+  return useQuery({ queryKey: ["ai_usage"], queryFn: api.aiUsageSummary });
+}
+
+export const useRoutineMut = () => useMutate("routines");
+
+export function useToggleRoutineLog() {
+  const qc = useQueryClient();
+  const { toast } = useToast();
+  return useMutation({
+    mutationFn: ({ routineId, date }: { routineId: number; date: string }) =>
+      api.toggleRoutineLog(routineId, date),
+    onMutate: async ({ routineId, date }) => {
+      await qc.cancelQueries({ queryKey: ["routine_logs"] });
+      const previous = qc.getQueryData<api.Row[]>(["routine_logs"]) ?? [];
+      const existing = previous.find(
+        (row) => Number(row.routine_id) === routineId && row.date === date,
+      );
+      qc.setQueryData<api.Row[]>(
+        ["routine_logs"],
+        existing
+          ? previous.filter((row) => row !== existing)
+          : [
+              ...previous,
+              {
+                id: -Date.now(),
+                routine_id: routineId,
+                date,
+                completed_at: new Date().toISOString(),
+              },
+            ],
+      );
+      return { previous };
+    },
+    onError: (err, _vars, context) => {
+      if (context?.previous) qc.setQueryData(["routine_logs"], context.previous);
+      toast({ type: "error", title: "Could not update check-in", description: errorMessage(err) });
+    },
+    onSettled: () => {
+      qc.invalidateQueries({ queryKey: ["routine_logs"] });
+      queueBackup();
+    },
   });
 }
 
@@ -152,6 +205,8 @@ export function useApplyAiAction() {
       qc.invalidateQueries({ queryKey: ["tasks"] });
       qc.invalidateQueries({ queryKey: ["time_entries"] });
       qc.invalidateQueries({ queryKey: ["money_entries"] });
+      qc.invalidateQueries({ queryKey: ["routines"] });
+      qc.invalidateQueries({ queryKey: ["routine_logs"] });
       queueBackup();
       toast({ type: "success", title: res.summary });
     },

@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { useNavigate } from "@tanstack/react-router";
 import { SegmentedControl, useToast } from "@halo-ds/react";
-import { addDays, mondayOf, todayLocal, type Row } from "../lib/api";
+import { addDays, localDayOfIso, mondayOf, todayLocal, type Row } from "../lib/api";
 import ScrollArea from "../components/ScrollArea";
 import {
   useAiDrawer,
@@ -10,7 +10,11 @@ import {
   useGoals,
   useMoney,
   useRescheduleOverdue,
+  useRoutineLogs,
+  useRoutineMut,
+  useRoutines,
   useSettings,
+  useToggleRoutineLog,
   useTaskMut,
   useTasks,
   useThemeMut,
@@ -263,6 +267,8 @@ export function TodayPage() {
 
       <div className="body-grid">
         <div className="ledger">
+          <DailyNonNegotiables />
+
           {overdue.length > 0 && (
             <Card>
               <div className="card-head">
@@ -484,6 +490,184 @@ export function TodayPage() {
         />
       )}
     </section>
+  );
+}
+
+/* ------------------------------------------------- Daily non-negotiables */
+
+function DailyNonNegotiables() {
+  const { data: routines = [] } = useRoutines();
+  const { data: logs = [] } = useRoutineLogs();
+  const toggle = useToggleRoutineLog();
+  const routineMut = useRoutineMut();
+  const navigate = useNavigate();
+  const today = todayLocal();
+  const [adding, setAdding] = useState(false);
+  const [title, setTitle] = useState("");
+  const [timeOfDay, setTimeOfDay] = useState("anytime");
+  const [error, setError] = useState("");
+
+  const ordered = [...routines]
+    .filter((r) => Number(r.active) === 1)
+    .sort(
+      (a, b) =>
+        Number(a.sort_order ?? 0) - Number(b.sort_order ?? 0) || Number(a.id) - Number(b.id),
+    );
+  const doneIds = new Set(
+    logs
+      .filter((l) => l.date === today)
+      .map((l) => Number(l.routine_id)),
+  );
+  const done = ordered.filter((r) => doneIds.has(Number(r.id))).length;
+  const pct = ordered.length ? Math.round((done / ordered.length) * 100) : 0;
+
+  const streak = (() => {
+    const byDate = new Map<string, Set<number>>();
+    for (const log of logs) {
+      const day = String(log.date ?? "");
+      const set = byDate.get(day) ?? new Set<number>();
+      set.add(Number(log.routine_id));
+      byDate.set(day, set);
+    }
+    let run = 0;
+    let cursor = today;
+    const todaySet = byDate.get(today) ?? new Set<number>();
+    const createdDay = (r: Row) => {
+      const raw = String(r.created_at ?? "");
+      if (!raw) return "";
+      return raw.length === 10 ? raw : localDayOfIso(raw);
+    };
+    const todayActive = ordered.filter((r) => createdDay(r) <= today);
+    if (todayActive.length && todayActive.some((r) => !todaySet.has(Number(r.id)))) {
+      cursor = addDays(today, -1);
+    }
+    for (let i = 0; i < 400; i++) {
+      const set = byDate.get(cursor) ?? new Set<number>();
+      const active = ordered.filter((r) => createdDay(r) <= cursor);
+      if (!active.length) break;
+      if (active.some((r) => !set.has(Number(r.id)))) break;
+      run++;
+      cursor = addDays(cursor, -1);
+    }
+    return run;
+  })();
+
+  const add = async () => {
+    if (!title.trim()) return setError("Give this non-negotiable a name.");
+    try {
+      await routineMut.insert.mutateAsync({
+        title: title.trim(),
+        time_of_day: timeOfDay,
+        color: "#5749F4",
+        sort_order: Date.now(),
+        active: 1,
+        created_at: new Date().toISOString(),
+      });
+      setTitle("");
+      setAdding(false);
+      setError("");
+    } catch (e) {
+      setError(String(e));
+    }
+  };
+
+  return (
+    <Card className="today-routines">
+      <div className="card-head">
+        <span className="card-title">Daily Non-Negotiables</span>
+        <span className="count">
+          {done} / {ordered.length}
+        </span>
+        {streak > 0 && (
+          <span className="chip chip-orange">
+            <Icon name="flame" size={12} /> {streak}d streak
+          </span>
+        )}
+        <span className="spacer" />
+        <Button size="sm" variant="ghost" onClick={() => setAdding(true)}>
+          <Icon name="plus" size={13} /> Add
+        </Button>
+        <Button size="sm" variant="ghost" onClick={() => navigate({ to: "/routines" })}>
+          Heatmap <Icon name="arrowRight" size={13} />
+        </Button>
+      </div>
+      <div className="card-body tight">
+        <div className="routine-progress-wrap">
+          <Progress value={pct} slim success={pct === 100 && ordered.length > 0} />
+        </div>
+        {ordered.length === 0 ? (
+          <div className="field-hint" style={{ padding: "8px 12px 12px" }}>
+            Add the 2–4 daily habits you want to protect no matter what.
+          </div>
+        ) : (
+          ordered.map((routine) => {
+            const isDone = doneIds.has(Number(routine.id));
+            return (
+              <label className="routine-today-item today-routine-row" key={routine.id}>
+                <Checkbox
+                  checked={isDone}
+                  onChange={() => toggle.mutate({ routineId: Number(routine.id), date: today })}
+                  label={String(routine.title)}
+                />
+                <span className="routine-dot" style={{ background: String(routine.color) }} />
+                <span className={`routine-today-title${isDone ? " is-done" : ""}`}>
+                  {String(routine.title)}
+                </span>
+                {String(routine.time_of_day ?? "anytime") !== "anytime" && (
+                  <span className="chip chip-neutral">
+                    {String(routine.time_of_day).charAt(0).toUpperCase() +
+                      String(routine.time_of_day).slice(1)}
+                  </span>
+                )}
+              </label>
+            );
+          })
+        )}
+      </div>
+
+      {adding && (
+        <Modal
+          title="New non-negotiable"
+          label="Daily routine"
+          onClose={() => setAdding(false)}
+          footer={
+            <>
+              <Button variant="ghost" onClick={() => setAdding(false)}>
+                Cancel
+              </Button>
+              <Button variant="primary" onClick={() => void add()}>
+                Add
+              </Button>
+            </>
+          }
+        >
+          <div className="field">
+            <span className="field-label">Title</span>
+            <Input
+              value={title}
+              onChange={(e) => setTitle(e.target.value)}
+              placeholder="Morning walk, Read 20 minutes…"
+              autoFocus
+            />
+          </div>
+          <div className="field">
+            <span className="field-label">Time of day</span>
+            <SelectField
+              value={timeOfDay}
+              onChange={setTimeOfDay}
+              ariaLabel="Time of day"
+              options={[
+                { value: "morning", label: "Morning" },
+                { value: "afternoon", label: "Afternoon" },
+                { value: "evening", label: "Evening" },
+                { value: "anytime", label: "Anytime" },
+              ]}
+            />
+          </div>
+          {error && <div className="field-error">{error}</div>}
+        </Modal>
+      )}
+    </Card>
   );
 }
 

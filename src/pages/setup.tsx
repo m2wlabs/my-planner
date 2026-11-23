@@ -1,31 +1,27 @@
 import { useEffect, useState, type ReactNode } from "react";
 import { useNavigate } from "@tanstack/react-router";
 import { useQueryClient } from "@tanstack/react-query";
-import { Avatar, SocialButton, useToast } from "@halo-ds/react";
+import { useToast } from "@halo-ds/react";
 import * as api from "../lib/api";
 import {
-  useAiModels,
   useCurrency,
   useDebouncedSettings,
   useGoalMut,
-  useGoogleAuth,
   useRefreshRates,
   useSettings,
   useThemeMut,
 } from "../lib/hooks";
 import { currencyOptions } from "../lib/currency";
+import { AiProvidersCard, AiUsageCard, VoiceSettingsCard } from "../components/AiWidgets";
 import {
   Alert,
   Button,
   Card,
   ComboboxField,
-  Field,
   Icon,
   Input,
   PageHead,
-  SelectField,
   Switch,
-  Textarea,
   TimeField,
 } from "../components/ui";
 
@@ -51,452 +47,6 @@ function SettingRow({
   );
 }
 
-function GoogleAccountSection() {
-  const { data: auth } = useGoogleAuth();
-  const { data: modelsRes, refetch: refetchModels, isFetching: fetchingModels } = useAiModels();
-  const qc = useQueryClient();
-  const { toast } = useToast();
-
-  const [showOauthConfig, setShowOauthConfig] = useState(false);
-  const [clientId, setClientId] = useState("");
-  const [clientSecret, setClientSecret] = useState("");
-  const [quotaProject, setQuotaProject] = useState("");
-  const [jsonPaste, setJsonPaste] = useState("");
-  const [apiKey, setApiKey] = useState("");
-  const [signingIn, setSigningIn] = useState(false);
-  const [busy, setBusy] = useState(false);
-  const [testResult, setTestResult] = useState<{ ok: boolean; text: string } | null>(null);
-  const [error, setError] = useState("");
-
-  useEffect(() => {
-    if (!auth) return;
-    setClientId(auth.oauth_client_id || "");
-    setQuotaProject(auth.quota_project_id || "");
-  }, [auth?.oauth_client_id, auth?.quota_project_id]);
-
-  const invalidateAuth = async () => {
-    await qc.invalidateQueries({ queryKey: ["google_auth"] });
-    await qc.invalidateQueries({ queryKey: ["ai_models"] });
-  };
-
-  const handlePickJson = async () => {
-    setError("");
-    setBusy(true);
-    try {
-      const res = await api.googlePickClientJson();
-      if (!res.cancelled) {
-        await invalidateAuth();
-        setShowOauthConfig(false);
-        toast({ type: "success", title: "Google OAuth client imported" });
-      }
-    } catch (e) {
-      setError(String(e));
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  const handleImportJsonPaste = async () => {
-    if (!jsonPaste.trim()) return;
-    setError("");
-    setBusy(true);
-    try {
-      await api.googleImportClientJson(jsonPaste.trim());
-      setJsonPaste("");
-      await invalidateAuth();
-      setShowOauthConfig(false);
-      toast({ type: "success", title: "Google OAuth client imported" });
-    } catch (e) {
-      setError(String(e));
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  const handleSaveManualOauth = async () => {
-    if (!clientId.trim()) return;
-    setError("");
-    setBusy(true);
-    try {
-      await api.googleSaveOauthConfig(clientId.trim(), clientSecret.trim(), quotaProject.trim());
-      setClientSecret("");
-      await invalidateAuth();
-      toast({ type: "success", title: "Google OAuth client saved" });
-    } catch (e) {
-      setError(String(e));
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  const handleOauthSignIn = async () => {
-    if (!auth?.oauth_configured) {
-      setShowOauthConfig(true);
-      return;
-    }
-    setError("");
-    setTestResult(null);
-    setSigningIn(true);
-    try {
-      await api.googleOauthSignIn();
-      await invalidateAuth();
-      toast({ type: "success", title: "Signed in with Google" });
-    } catch (e) {
-      setError(String(e));
-    } finally {
-      setSigningIn(false);
-    }
-  };
-
-  const handleImportAdc = async () => {
-    setError("");
-    setTestResult(null);
-    setBusy(true);
-    try {
-      await api.googleImportAdc();
-      await invalidateAuth();
-      toast({ type: "success", title: "Connected local Google CLI account" });
-    } catch (e) {
-      setError(String(e));
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  const handleSaveApiKey = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setError("");
-    setTestResult(null);
-    setBusy(true);
-    try {
-      await api.googleSaveApiKey(apiKey.trim());
-      setApiKey("");
-      await invalidateAuth();
-      toast({ type: "success", title: "Google AI Studio key saved" });
-    } catch (err) {
-      setError(String(err));
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  const handleClearApiKey = async () => {
-    setBusy(true);
-    try {
-      await api.googleSaveApiKey("", false);
-      await invalidateAuth();
-      toast({ type: "success", title: "Removed API key" });
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  const handleSignOut = async (clearKey = false) => {
-    setBusy(true);
-    setError("");
-    setTestResult(null);
-    try {
-      await api.googleSignOut(clearKey);
-      await invalidateAuth();
-      toast({ type: "success", title: "Disconnected Google Account" });
-    } catch (e) {
-      setError(String(e));
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  const handleTestConnection = async () => {
-    setBusy(true);
-    setError("");
-    setTestResult(null);
-    try {
-      const res = await api.googleTestConnection();
-      setTestResult({
-        ok: true,
-        text: `Connected to ${res.model} via ${res.transport === "oauth" ? "Google OAuth" : "AI Studio key"} — "${res.reply.trim()}"`,
-      });
-      toast({ type: "success", title: "Gemini connection verified" });
-    } catch (e) {
-      const msg = String(e);
-      setTestResult({ ok: false, text: msg });
-      setError(msg);
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  const models = modelsRes?.models ?? [];
-
-  return (
-    <Card id="section-google">
-      <div className="card-head plain">
-        <Icon name="sparkles" size={18} className="icon-muted" />
-        <span className="card-title">Google Account & AI Models</span>
-        <span className="spacer" />
-        <span className={`chip ${auth?.connected ? "chip-success" : "chip-neutral"}`}>
-          {auth?.connected ? "Connected" : "Not connected"}
-        </span>
-      </div>
-      <div className="card-body pad" style={{ paddingTop: 12, display: "flex", flexDirection: "column", gap: 14 }}>
-        {/* Connected profile summary */}
-        {auth?.has_oauth && (
-          <div className="google-profile-card">
-            <Avatar
-              src={auth.profile?.picture || undefined}
-              initials={(auth.profile?.name || auth.profile?.email || "G").slice(0, 2).toUpperCase()}
-              size="md"
-              status="online"
-            />
-            <div style={{ flex: 1, minWidth: 0 }}>
-              <div style={{ fontSize: 15, fontWeight: 600 }}>
-                {auth.profile?.name || "Google Account"}
-              </div>
-              <div className="field-hint">
-                {auth.profile?.email || "Authenticated via Google OAuth"} ·{" "}
-                {auth.auth_method === "adc" ? "Local Google CLI (ADC)" : "OAuth 2.0 PKCE"}
-              </div>
-            </div>
-            <Button size="sm" variant="secondary" disabled={busy} onClick={() => handleSignOut(false)}>
-              <Icon name="logout" size={14} /> Sign out
-            </Button>
-          </div>
-        )}
-
-        {/* Primary sign-in controls */}
-        <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
-          <SocialButton
-            provider="google"
-            variant="outline"
-            disabled={signingIn || busy}
-            onClick={handleOauthSignIn}
-          >
-            {signingIn
-              ? "Waiting for browser sign-in…"
-              : auth?.has_oauth
-                ? "Switch Google Account"
-                : "Sign in with Google"}
-          </SocialButton>
-
-          {signingIn && (
-            <Button size="sm" variant="ghost" onClick={() => api.googleOauthCancel()}>
-              Cancel
-            </Button>
-          )}
-
-          {auth?.adc_available && (
-            <Button variant="secondary" disabled={busy || signingIn} onClick={handleImportAdc}>
-              <Icon name="user" size={15} /> Connect local Google CLI
-            </Button>
-          )}
-
-          <Button
-            variant="ghost"
-            size="sm"
-            onClick={() => setShowOauthConfig((v) => !v)}
-          >
-            <Icon name="settings" size={14} />{" "}
-            {auth?.oauth_configured ? "OAuth client settings" : "Configure Google OAuth client"}
-          </Button>
-        </div>
-
-        {/* Collapsible Google Cloud Desktop OAuth Client setup */}
-        {(showOauthConfig || (!auth?.oauth_configured && !auth?.has_oauth)) && (
-          <div className="oauth-config-box">
-            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, flexWrap: "wrap" }}>
-              <strong style={{ fontSize: 13 }}>Google Cloud Desktop OAuth Client (PKCE)</strong>
-              <div style={{ display: "flex", gap: 8 }}>
-                <Button size="sm" variant="secondary" disabled={busy} onClick={handlePickJson}>
-                  <Icon name="folder" size={14} /> Import client_secret.json
-                </Button>
-                <Button
-                  size="sm"
-                  variant="ghost"
-                  onClick={() => api.googleOpenUrl("https://console.cloud.google.com/apis/credentials")}
-                >
-                  <Icon name="external" size={13} /> Cloud Console
-                </Button>
-              </div>
-            </div>
-            <div className="field-hint">
-              Create an OAuth 2.0 Client ID of type <strong>Desktop app</strong> in Google Cloud
-              Console and import its JSON file (or paste credentials below). Tokens stay encrypted
-              locally and outside your planner backups.
-            </div>
-            <div className="modal-grid">
-              <Field label="Client ID">
-                <Input
-                  placeholder="xxxx.apps.googleusercontent.com"
-                  value={clientId}
-                  onChange={(e) => setClientId(e.target.value)}
-                />
-              </Field>
-              <Field label="Client Secret">
-                <Input
-                  type="password"
-                  placeholder={auth?.has_oauth_client_secret ? "Saved (leave blank to keep)" : "GOCSPX-…"}
-                  value={clientSecret}
-                  onChange={(e) => setClientSecret(e.target.value)}
-                />
-              </Field>
-            </div>
-            <div style={{ display: "flex", gap: 10, alignItems: "flex-end", flexWrap: "wrap" }}>
-              <Field label="Google Cloud Quota Project ID (optional)" className="grow">
-                <Input
-                  placeholder="my-gcp-project-id"
-                  value={quotaProject}
-                  onChange={(e) => setQuotaProject(e.target.value)}
-                />
-              </Field>
-              <Button size="sm" variant="primary" disabled={busy || !clientId.trim()} onClick={handleSaveManualOauth}>
-                Save OAuth client
-              </Button>
-            </div>
-            <details style={{ fontSize: 13 }}>
-              <summary style={{ cursor: "pointer", color: "var(--muted-foreground)" }}>
-                Or paste client_secret.json text
-              </summary>
-              <div style={{ display: "flex", flexDirection: "column", gap: 8, marginTop: 8 }}>
-                <Textarea
-                  rows={3}
-                  placeholder='{"installed":{"client_id":"...","client_secret":"..."}}'
-                  value={jsonPaste}
-                  onChange={(e) => setJsonPaste(e.target.value)}
-                />
-                <div>
-                  <Button size="sm" variant="secondary" disabled={busy || !jsonPaste.trim()} onClick={handleImportJsonPaste}>
-                    Import pasted JSON
-                  </Button>
-                </div>
-              </div>
-            </details>
-          </div>
-        )}
-
-        {/* Google AI Studio direct API key */}
-        <SettingRow
-          title="Google AI Studio API key"
-          hint={
-            auth?.has_api_key
-              ? `Saved key: ${auth.api_key_preview} · Stored encrypted outside backups`
-              : "Instant direct access to Gemini models using your Google AI Studio account"
-          }
-        >
-          <form
-            onSubmit={handleSaveApiKey}
-            style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}
-          >
-            <div style={{ width: 210 }}>
-              <Input
-                type="password"
-                placeholder={auth?.has_api_key ? "Replace key…" : "Paste AIza… key"}
-                value={apiKey}
-                onChange={(e) => setApiKey(e.target.value)}
-              />
-            </div>
-            <Button size="sm" variant="primary" type="submit" disabled={busy || !apiKey.trim()}>
-              Save
-            </Button>
-            {auth?.has_api_key ? (
-              <Button size="sm" variant="ghost" disabled={busy} onClick={handleClearApiKey}>
-                Remove
-              </Button>
-            ) : (
-              <Button
-                size="sm"
-                variant="secondary"
-                onClick={() => api.googleOpenUrl("https://aistudio.google.com/apikey")}
-              >
-                <Icon name="external" size={14} /> Get key
-              </Button>
-            )}
-          </form>
-        </SettingRow>
-
-        {auth?.has_oauth && auth?.has_api_key && (
-          <SettingRow
-            title="Use AI Studio key for Gemini calls"
-            hint="Keep your Google Account signed in while routing AI billing through your AI Studio key"
-          >
-            <Switch
-              checked={Boolean(auth.prefer_api_key)}
-              onChange={async (checked) => {
-                await api.googleSetPreferences({ preferApiKey: checked });
-                invalidateAuth();
-              }}
-              label="Use AI Studio key for Gemini calls"
-            />
-          </SettingRow>
-        )}
-
-        {/* Model selector & connection test */}
-        <SettingRow
-          title="Default Gemini model"
-          hint={
-            modelsRes?.live
-              ? "Live models synced from your Google Account"
-              : "Current Gemini 4 & 3.5 models (Interactions API v1)"
-          }
-        >
-          <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
-            <div className="setting-control wide">
-              <SelectField
-                value={auth?.preferred_model || "gemini-4-hydrogen"}
-                onChange={async (modelId) => {
-                  await api.googleSetPreferences({ preferredModel: modelId });
-                  invalidateAuth();
-                }}
-                ariaLabel="Default Gemini model"
-                options={
-                  models.length > 0
-                    ? models.map((m) => ({
-                        value: m.id,
-                        label: `${m.label}${m.badge ? ` · ${m.badge}` : ""}`,
-                      }))
-                    : [{ value: "gemini-4-hydrogen", label: "Gemini 4 Hydrogen" }]
-                }
-              />
-            </div>
-            <Button
-              size="sm"
-              variant="ghost"
-              className="icon-btn"
-              aria-label="Refresh models"
-              disabled={fetchingModels}
-              onClick={() => refetchModels()}
-            >
-              <Icon name="refresh" size={15} />
-            </Button>
-          </div>
-        </SettingRow>
-
-        <SettingRow
-          title="Verify live AI connection"
-          hint="Send a lightweight ping to the Gemini Interactions API using your active Google credentials"
-        >
-          <Button
-            variant="secondary"
-            disabled={busy || !auth?.connected}
-            onClick={handleTestConnection}
-          >
-            <Icon name="zap" size={15} /> {busy ? "Testing…" : "Test connection"}
-          </Button>
-        </SettingRow>
-
-        {testResult && (
-          <Alert
-            type={testResult.ok ? "success" : "error"}
-            variant="soft"
-            title={testResult.ok ? "Connection healthy" : "Connection check failed"}
-            description={testResult.text}
-          />
-        )}
-        {error && !testResult && <span className="field-error">{error}</span>}
-      </div>
-    </Card>
-  );
-}
-
 /* --------------------------------------------------------- Settings Page */
 
 export function SettingsPage({ initialSection }: { initialSection?: string }) {
@@ -506,7 +56,7 @@ export function SettingsPage({ initialSection }: { initialSection?: string }) {
   const qc = useQueryClient();
   const { toast } = useToast();
 
-  const [section, setSection] = useState(initialSection || "google");
+  const [section, setSection] = useState(initialSection || "ai-providers");
   const [status, setStatus] = useState("");
   const [backups, setBackups] = useState<api.BackupItem[]>([]);
   const [restoreName, setRestoreName] = useState("");
@@ -571,7 +121,9 @@ export function SettingsPage({ initialSection }: { initialSection?: string }) {
   };
 
   const sections = [
-    { id: "google", label: "Google & AI", icon: "sparkles" },
+    { id: "ai-providers", label: "AI providers", icon: "sparkles" },
+    { id: "ai-voice", label: "Voice", icon: "volume" },
+    { id: "ai-usage", label: "AI usage", icon: "chart" },
     { id: "general", label: "General", icon: "settings" },
     { id: "currency", label: "Currency", icon: "wallet" },
     { id: "backup", label: "Data & storage", icon: "database" },
@@ -587,7 +139,7 @@ export function SettingsPage({ initialSection }: { initialSection?: string }) {
     <section className="page">
       <PageHead
         title="Preferences"
-        subtitle="Local-first SQLite storage with direct Google Account AI integration"
+        subtitle="Local-first SQLite storage with your own multi-provider AI and voice models"
         actions={
           <Button variant="primary" onClick={() => navigate({ to: "/today" })}>
             Done
@@ -612,7 +164,9 @@ export function SettingsPage({ initialSection }: { initialSection?: string }) {
         </Card>
 
         <div className="settings-col">
-          <GoogleAccountSection />
+          <AiProvidersCard />
+          <VoiceSettingsCard />
+          <AiUsageCard />
 
           <Card id="section-general">
             <div className="card-head plain">
@@ -786,7 +340,7 @@ export function SettingsPage({ initialSection }: { initialSection?: string }) {
               </SettingRow>
               <SettingRow
                 title="Export workspace"
-                hint="Download a readable JSON copy of all themes, goals, tasks, time, and money"
+                hint="Download a readable JSON copy of all themes, goals, tasks, time, money and routines"
               >
                 <Button variant="secondary" onClick={exportJson}>
                   <Icon name="download" size={15} /> Export JSON
@@ -958,7 +512,7 @@ export function FirstRunPage() {
     if (settings.review_time) setReview(String(settings.review_time));
   }, [settings, hydrated]);
 
-  const finish = async (skip = false, openGoogleSetup = false) => {
+  const finish = async (skip = false, openAiSetup = false) => {
     setBusy(true);
     setError("");
     try {
@@ -1000,8 +554,8 @@ export function FirstRunPage() {
         first_run_done: "1",
       }));
       await qc.invalidateQueries({ queryKey: ["settings"] });
-      if (openGoogleSetup) {
-        navigate({ to: "/settings", search: { section: "google" } });
+      if (openAiSetup) {
+        navigate({ to: "/settings", search: { section: "ai-providers" } });
       } else {
         navigate({ to: "/today" });
       }
@@ -1020,8 +574,8 @@ export function FirstRunPage() {
         </div>
         <h1 className="setup-title">Set up My Planner</h1>
         <p className="setup-sub">
-          Tasks, time and money live in a SQLite file you own. Optionally connect your Google
-          Account anytime to unlock Gemini AI planning.
+          Tasks, time, money and daily non-negotiables live in a SQLite file you own. Optionally
+          connect Anthropic, OpenAI, Google Gemini, or a local model for AI coaching.
         </p>
 
         <div className="setup-form">
@@ -1111,7 +665,7 @@ export function FirstRunPage() {
               disabled={busy}
               onClick={() => finish(false, true)}
             >
-              <Icon name="sparkles" size={15} /> Finish & connect Google Account AI
+              <Icon name="sparkles" size={15} /> Finish &amp; connect an AI provider
             </Button>
             <Button
               variant="ghost"
@@ -1125,8 +679,8 @@ export function FirstRunPage() {
 
           <div className="setup-note">
             <Icon name="shield" size={16} />
-            Your tasks, time and money stay on this device. Google AI is opt-in and runs directly
-            against your own account.
+            Your tasks, time and money stay on this device. AI is opt-in: keys are encrypted locally
+            and requests go straight to the provider you choose.
           </div>
         </div>
       </Card>

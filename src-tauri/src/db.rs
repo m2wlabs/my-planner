@@ -11,6 +11,9 @@ pub const TABLES: &[&str] = &[
     "money_entries",
     "weekly_reports",
     "ai_messages",
+    "ai_usage_logs",
+    "routines",
+    "routine_logs",
 ];
 
 pub fn columns(table: &str) -> Option<&'static [&'static str]> {
@@ -45,8 +48,25 @@ pub fn columns(table: &str) -> Option<&'static [&'static str]> {
             "content",
             "model",
             "actions_json",
+            "usage_json",
             "created_at",
         ],
+        "ai_usage_logs" => &[
+            "created_at",
+            "model",
+            "transport",
+            "feature",
+            "input_tokens",
+            "output_tokens",
+            "thought_tokens",
+            "cached_tokens",
+            "total_tokens",
+            "latency_ms",
+            "status",
+            "error_code",
+        ],
+        "routines" => &["title", "time_of_day", "color", "sort_order", "active", "created_at"],
+        "routine_logs" => &["routine_id", "date", "completed_at"],
         _ => return None,
     })
 }
@@ -128,14 +148,48 @@ pub fn migrate(path: &std::path::Path) -> Result<(), String> {
                 content TEXT NOT NULL,
                 model TEXT NOT NULL DEFAULT '',
                 actions_json TEXT,
+                usage_json TEXT,
                 created_at TEXT NOT NULL
+             );
+             CREATE TABLE IF NOT EXISTS ai_usage_logs(
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                created_at TEXT NOT NULL,
+                model TEXT NOT NULL,
+                transport TEXT NOT NULL DEFAULT '',
+                feature TEXT NOT NULL DEFAULT 'chat',
+                input_tokens INTEGER NOT NULL DEFAULT 0,
+                output_tokens INTEGER NOT NULL DEFAULT 0,
+                thought_tokens INTEGER NOT NULL DEFAULT 0,
+                cached_tokens INTEGER NOT NULL DEFAULT 0,
+                total_tokens INTEGER NOT NULL DEFAULT 0,
+                latency_ms INTEGER NOT NULL DEFAULT 0,
+                status TEXT NOT NULL DEFAULT 'ok',
+                error_code TEXT NOT NULL DEFAULT ''
              );
              CREATE INDEX IF NOT EXISTS idx_tasks_planned_date ON tasks(planned_date);
              CREATE INDEX IF NOT EXISTS idx_tasks_goal_id ON tasks(goal_id);
              CREATE INDEX IF NOT EXISTS idx_time_entries_task_id ON time_entries(task_id);
              CREATE INDEX IF NOT EXISTS idx_money_entries_date ON money_entries(date);
              CREATE INDEX IF NOT EXISTS idx_ai_messages_session ON ai_messages(session_id, id);
-             PRAGMA user_version=2;",
+             CREATE INDEX IF NOT EXISTS idx_ai_usage_created ON ai_usage_logs(created_at);
+             CREATE TABLE IF NOT EXISTS routines(
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                title TEXT NOT NULL,
+                time_of_day TEXT NOT NULL DEFAULT 'anytime',
+                color TEXT NOT NULL DEFAULT '#5749F4',
+                sort_order INTEGER NOT NULL DEFAULT 0,
+                active INTEGER NOT NULL DEFAULT 1,
+                created_at TEXT NOT NULL
+             );
+             CREATE TABLE IF NOT EXISTS routine_logs(
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                routine_id INTEGER NOT NULL REFERENCES routines(id) ON DELETE CASCADE,
+                date TEXT NOT NULL,
+                completed_at TEXT NOT NULL,
+                UNIQUE(routine_id, date)
+             );
+             CREATE INDEX IF NOT EXISTS idx_routine_logs_date ON routine_logs(date);
+             PRAGMA user_version=4;",
         )
         .map_err(|e| e.to_string())?;
         return Ok(());
@@ -240,6 +294,74 @@ pub fn migrate(path: &std::path::Path) -> Result<(), String> {
         }
     }
 
+    let version_after_v2: i64 = c
+        .query_row("PRAGMA user_version", [], |r| r.get(0))
+        .map_err(|e| e.to_string())?;
+
+    if version_after_v2 < 3 {
+        let has_usage_col: bool = {
+            let mut stmt = c
+                .prepare("PRAGMA table_info(ai_messages)")
+                .map_err(|e| e.to_string())?;
+            let cols = stmt
+                .query_map([], |r| r.get::<_, String>(1))
+                .map_err(|e| e.to_string())?
+                .collect::<Result<Vec<_>, _>>()
+                .unwrap_or_default();
+            cols.iter().any(|name| name == "usage_json")
+        };
+        if !has_usage_col {
+            let _ = c.execute("ALTER TABLE ai_messages ADD COLUMN usage_json TEXT", []);
+        }
+        c.execute_batch(
+            "CREATE TABLE IF NOT EXISTS ai_usage_logs(
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                created_at TEXT NOT NULL,
+                model TEXT NOT NULL,
+                transport TEXT NOT NULL DEFAULT '',
+                feature TEXT NOT NULL DEFAULT 'chat',
+                input_tokens INTEGER NOT NULL DEFAULT 0,
+                output_tokens INTEGER NOT NULL DEFAULT 0,
+                thought_tokens INTEGER NOT NULL DEFAULT 0,
+                cached_tokens INTEGER NOT NULL DEFAULT 0,
+                total_tokens INTEGER NOT NULL DEFAULT 0,
+                latency_ms INTEGER NOT NULL DEFAULT 0,
+                status TEXT NOT NULL DEFAULT 'ok',
+                error_code TEXT NOT NULL DEFAULT ''
+             );
+             CREATE INDEX IF NOT EXISTS idx_ai_usage_created ON ai_usage_logs(created_at);
+             PRAGMA user_version=3;",
+        )
+        .map_err(|e| e.to_string())?;
+    }
+
+    let version_after_v3: i64 = c
+        .query_row("PRAGMA user_version", [], |r| r.get(0))
+        .map_err(|e| e.to_string())?;
+    if version_after_v3 < 4 {
+        c.execute_batch(
+            "CREATE TABLE IF NOT EXISTS routines(
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                title TEXT NOT NULL,
+                time_of_day TEXT NOT NULL DEFAULT 'anytime',
+                color TEXT NOT NULL DEFAULT '#5749F4',
+                sort_order INTEGER NOT NULL DEFAULT 0,
+                active INTEGER NOT NULL DEFAULT 1,
+                created_at TEXT NOT NULL
+             );
+             CREATE TABLE IF NOT EXISTS routine_logs(
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                routine_id INTEGER NOT NULL REFERENCES routines(id) ON DELETE CASCADE,
+                date TEXT NOT NULL,
+                completed_at TEXT NOT NULL,
+                UNIQUE(routine_id, date)
+             );
+             CREATE INDEX IF NOT EXISTS idx_routine_logs_date ON routine_logs(date);
+             PRAGMA user_version=4;",
+        )
+        .map_err(|e| e.to_string())?;
+    }
+
     Ok(())
 }
 
@@ -328,6 +450,12 @@ fn validate_row(table: &str, obj: &Map<String, Value>, is_insert: bool) -> Resul
             if name.trim().is_empty() {
                 return Err("Theme name cannot be empty.".into());
             }
+        }
+    }
+    if table == "routines" {
+        if (is_insert || obj.contains_key("title"))
+            && obj.get("title").and_then(|v| v.as_str()).map(str::trim).unwrap_or("").is_empty() {
+            return Err("Routine title cannot be empty.".into());
         }
     }
     Ok(())
@@ -432,6 +560,30 @@ pub fn delete_row(table: String, id: i64, state: State<DbPath>) -> Result<Value,
 }
 
 #[tauri::command]
+pub fn toggle_routine_log(routine_id: i64, date: String, state: State<DbPath>) -> Result<Value, String> {
+    let c = open(&state.0)?;
+    toggle_routine_log_in(&c, routine_id, &date)
+}
+
+fn toggle_routine_log_in(c: &Connection, routine_id: i64, date: &str) -> Result<Value, String> {
+    let tx = c.unchecked_transaction().map_err(|e| e.to_string())?;
+    let existing: bool = tx.query_row(
+        "SELECT EXISTS(SELECT 1 FROM routine_logs WHERE routine_id=? AND date=?)",
+        params![routine_id, date],
+        |r| r.get(0),
+    ).map_err(|e| e.to_string())?;
+    if existing {
+        tx.execute("DELETE FROM routine_logs WHERE routine_id=? AND date=?", params![routine_id, date])
+            .map_err(|e| e.to_string())?;
+    } else {
+        tx.execute("INSERT INTO routine_logs (routine_id,date,completed_at) VALUES (?,?,?)", params![routine_id, date, chrono::Utc::now().to_rfc3339()])
+            .map_err(|e| e.to_string())?;
+    }
+    tx.commit().map_err(|e| e.to_string())?;
+    Ok(json!({ "completed": !existing }))
+}
+
+#[tauri::command]
 pub fn delete_theme(
     id: i64,
     reassign_to_id: Option<i64>,
@@ -498,6 +650,14 @@ pub fn clear_ai_messages(session_id: Option<String>, state: State<DbPath>) -> Re
         c.execute("DELETE FROM ai_messages", [])
             .map_err(|e| e.to_string())?;
     }
+    Ok(json!({ "ok": true }))
+}
+
+#[tauri::command]
+pub fn clear_ai_usage(state: State<DbPath>) -> Result<Value, String> {
+    let c = open(&state.0)?;
+    c.execute("DELETE FROM ai_usage_logs", [])
+        .map_err(|e| e.to_string())?;
     Ok(json!({ "ok": true }))
 }
 
@@ -590,6 +750,8 @@ pub fn export_all_data(state: State<DbPath>) -> Result<Value, String> {
         "time_entries": query_table(&c, "time_entries")?,
         "money_entries": query_table(&c, "money_entries")?,
         "weekly_reports": query_table(&c, "weekly_reports")?,
+        "routines": query_table(&c, "routines")?,
+        "routine_logs": query_table(&c, "routine_logs")?,
     }))
 }
 
@@ -601,6 +763,14 @@ pub fn build_planner_context(path: &std::path::Path) -> Result<Value, String> {
     let tasks = query_table(&c, "tasks")?;
     let time_entries = query_table(&c, "time_entries")?;
     let money_entries = query_table(&c, "money_entries")?;
+    let routines = query_table(&c, "routines")?;
+    let since = (chrono::Local::now() - chrono::Duration::days(30))
+        .format("%Y-%m-%d")
+        .to_string();
+    let routine_logs: Vec<Value> = query_table(&c, "routine_logs")?
+        .into_iter()
+        .filter(|row| row.get("date").and_then(Value::as_str).unwrap_or("") >= since.as_str())
+        .collect();
 
     let today_local = chrono::Local::now().format("%Y-%m-%d").to_string();
     let cur_month = &today_local[..7];
@@ -648,6 +818,8 @@ pub fn build_planner_context(path: &std::path::Path) -> Result<Value, String> {
         "tasks": recent_tasks,
         "recent_time_entries": recent_time,
         "this_month_money_entries": recent_money,
+        "routines": routines,
+        "routine_logs_last_30_days": routine_logs,
     }))
 }
 
@@ -695,7 +867,11 @@ mod tests {
         migrate(&p).unwrap();
         let c = open(&p).unwrap();
         let ver: i64 = c.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
-        assert_eq!(ver, 2);
+        assert_eq!(ver, 4);
+        let usage_count: i64 = c
+            .query_row("SELECT COUNT(*) FROM ai_usage_logs", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(usage_count, 0);
 
         // Deleting a task with time_entries and money_entries now succeeds cleanly!
         c.execute("DELETE FROM tasks WHERE id=1", []).unwrap();
@@ -709,6 +885,23 @@ mod tests {
         let me_goal_id: Option<i64> = c.query_row("SELECT goal_id FROM money_entries WHERE id=1", [], |r| r.get(0)).unwrap();
         assert_eq!(me_goal_id, None);
 
+        let _ = std::fs::remove_file(&p);
+    }
+
+    #[test]
+    fn routines_migrate_toggle_idempotently_and_cascade() {
+        let p = temp_db("routines_v4");
+        migrate(&p).unwrap();
+        let c = open(&p).unwrap();
+        let version: i64 = c.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
+        assert_eq!(version, 4);
+        c.execute("INSERT INTO routines(title,created_at) VALUES('Walk','2026-11-23T00:00:00Z')", []).unwrap();
+        assert_eq!(toggle_routine_log_in(&c, 1, "2026-11-23").unwrap()["completed"], true);
+        assert_eq!(toggle_routine_log_in(&c, 1, "2026-11-23").unwrap()["completed"], false);
+        assert_eq!(toggle_routine_log_in(&c, 1, "2026-11-23").unwrap()["completed"], true);
+        c.execute("DELETE FROM routines WHERE id=1", []).unwrap();
+        let remaining: i64 = c.query_row("SELECT COUNT(*) FROM routine_logs", [], |r| r.get(0)).unwrap();
+        assert_eq!(remaining, 0);
         let _ = std::fs::remove_file(&p);
     }
 }

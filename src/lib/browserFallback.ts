@@ -1,18 +1,54 @@
-import type { AiModelInfo, GoogleAuthStatus, Row } from "./api";
+import type {
+  AiConfig,
+  AiSuggestedAction,
+  AiUsageLogItem,
+  AiUsageSummary,
+  Row,
+} from "./api";
 
 const STORAGE_KEY = "my-planner-browser-preview-v2";
+const DEFAULT_MONTHLY_BUDGET = 1_000_000;
 
 interface Store {
   nextId: number;
   tables: Record<string, Row[]>;
   settings: Record<string, string>;
-  auth: GoogleAuthStatus;
+  aiConfig: AiConfig;
 }
 
 function isoDate(offsetDays = 0) {
   const d = new Date();
   d.setDate(d.getDate() + offsetDays);
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+}
+
+function localDayOfIso(iso: string) {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return iso.slice(0, 10);
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+}
+
+export function defaultAiConfig(): AiConfig {
+  return {
+    schemaVersion: 2,
+    activeProviderId: "",
+    monthlyTokenBudget: DEFAULT_MONTHLY_BUDGET,
+    providers: [],
+    voice: {
+      ttsProvider: "browser",
+      ttsModel: "",
+      ttsVoice: "",
+      ttsBaseUrl: "",
+      ttsApiKey: "",
+      ttsRate: 1.0,
+      sttProvider: "browser",
+      sttModel: "",
+      sttBaseUrl: "",
+      sttApiKey: "",
+      autoSpeakReplies: false,
+      autoSendVoice: true,
+    },
+  };
 }
 
 function defaultStore(): Store {
@@ -24,6 +60,26 @@ function defaultStore(): Store {
   const nowIso = new Date().toISOString();
   const h1Start = new Date(Date.now() - 95 * 60_000).toISOString();
   const h1End = new Date(Date.now() - 40 * 60_000).toISOString();
+
+  const routines: Row[] = [
+    { id: 1, title: "Morning movement", time_of_day: "morning", color: "#E58A45", sort_order: 0, active: 1, created_at: new Date(Date.now() - 21 * 86400000).toISOString() },
+    { id: 2, title: "Plan the day", time_of_day: "morning", color: "#5749F4", sort_order: 1, active: 1, created_at: new Date(Date.now() - 21 * 86400000).toISOString() },
+    { id: 3, title: "Read for 20 minutes", time_of_day: "anytime", color: "#2D9D78", sort_order: 2, active: 1, created_at: new Date(Date.now() - 21 * 86400000).toISOString() },
+    { id: 4, title: "Evening reset", time_of_day: "evening", color: "#A16CE0", sort_order: 3, active: 1, created_at: new Date(Date.now() - 21 * 86400000).toISOString() },
+  ];
+  const routine_logs: Row[] = [];
+  for (let day = 21; day >= 1; day--) {
+    routines.forEach((routine, index) => {
+      if ((day * 7 + index * 11) % 9 !== 0) {
+        routine_logs.push({
+          id: 50 + routine_logs.length,
+          routine_id: routine.id,
+          date: isoDate(-day),
+          completed_at: new Date(Date.now() - day * 86400000 + (index + 8) * 3600000).toISOString(),
+        });
+      }
+    });
+  }
 
   return {
     nextId: 100,
@@ -41,7 +97,7 @@ function defaultStore(): Store {
           deadline: isoDate(18),
           theme_id: 1,
           status: "active",
-          notes: "Polish core UX, fix DB migrations, and ship Google AI integration.",
+          notes: "Polish core UX, fix DB migrations, and ship the multi-provider AI coach.",
         },
         {
           id: 2,
@@ -68,13 +124,13 @@ function defaultStore(): Store {
         },
         {
           id: 2,
-          title: "Ship Google Account OAuth & Gemini Coach",
+          title: "Verify voice input and AI provider switching",
           goal_id: 1,
           theme_id: 1,
           planned_date: today,
           status: "planned",
           created_at: nowIso,
-          notes: "Verify loopback sign-in, token refresh, and structured actions.",
+          notes: "Check mic capture, speech output, and provider failover.",
           estimate_mins: 90,
           priority: "high",
         },
@@ -127,9 +183,7 @@ function defaultStore(): Store {
           priority: "low",
         },
       ],
-      time_entries: [
-        { id: 1, task_id: 2, start_utc: h1Start, end_utc: h1End },
-      ],
+      time_entries: [{ id: 1, task_id: 2, start_utc: h1Start, end_utc: h1End }],
       money_entries: [
         {
           id: 1,
@@ -164,6 +218,9 @@ function defaultStore(): Store {
       ],
       weekly_reports: [],
       ai_messages: [],
+      ai_usage_logs: [],
+      routines,
+      routine_logs,
     },
     settings: {
       first_run_done: "1",
@@ -173,30 +230,52 @@ function defaultStore(): Store {
       backup_keep: "30",
       currency: "USD",
     },
-    auth: {
-      connected: false,
-      has_oauth: false,
-      has_api_key: false,
-      api_key_preview: "",
-      auth_method: "",
-      active_transport: "none",
-      prefer_api_key: false,
-      profile: null,
-      oauth_configured: false,
-      oauth_client_id: "",
-      has_oauth_client_secret: false,
-      quota_project_id: "",
-      preferred_model: "gemini-4-hydrogen",
-      adc_available: false,
-      scopes: [],
-    },
+    aiConfig: defaultAiConfig(),
   };
 }
 
 function load(): Store {
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
-    if (raw) return JSON.parse(raw) as Store;
+    if (raw) {
+      const parsed = JSON.parse(raw) as Partial<Store> & { auth?: unknown; secrets?: unknown };
+      const base = defaultStore();
+      const cfg = (parsed.aiConfig ?? {}) as Partial<AiConfig>;
+      const isV2 = (cfg.schemaVersion ?? 1) >= 2;
+      const migratedProviders = isV2
+        ? (cfg.providers ?? [])
+        : (cfg.providers ?? [])
+            .filter(
+              (p) =>
+                Boolean(p.apiKey?.trim()) ||
+                Boolean(p.verifiedAt?.trim()) ||
+                (p.kind === "openai-compatible" && p.enabled),
+            )
+            .map((p) => ({
+              ...p,
+              catalogId: p.catalogId ?? (p.kind === "openai-compatible" ? "custom" : p.kind),
+              discoveredModels: p.discoveredModels ?? [],
+            }));
+      const activeExists = migratedProviders.some((p) => p.id === cfg.activeProviderId);
+      const s: Store = {
+        nextId: parsed.nextId ?? base.nextId,
+        tables: { ...base.tables, ...(parsed.tables ?? {}) },
+        settings: { ...base.settings, ...(parsed.settings ?? {}) },
+        aiConfig: {
+          ...defaultAiConfig(),
+          ...cfg,
+          schemaVersion: 2,
+          providers: migratedProviders,
+          activeProviderId: activeExists ? (cfg.activeProviderId ?? "") : (migratedProviders[0]?.id ?? ""),
+          voice: { ...defaultAiConfig().voice, ...(cfg.voice ?? {}) },
+        },
+      };
+      if (!isV2) save(s);
+      if (!s.tables.ai_usage_logs) s.tables.ai_usage_logs = [];
+      if (!s.tables.routines) s.tables.routines = base.tables.routines;
+      if (!s.tables.routine_logs) s.tables.routine_logs = base.tables.routine_logs;
+      return s;
+    }
   } catch {
     /* ignore */
   }
@@ -213,15 +292,273 @@ function save(s: Store) {
   }
 }
 
-const PREVIEW_MODELS: AiModelInfo[] = [
-  { id: "gemini-4-hydrogen", label: "Gemini 4 Hydrogen", description: "Fast, balanced frontier model — great for daily planning and coaching.", badge: "Recommended", discovered: false },
-  { id: "gemini-4-argon", label: "Gemini 4 Argon", description: "Efficient frontier reasoning for goal breakdowns and schedules.", badge: "Balanced", discovered: false },
-  { id: "gemini-4-neon", label: "Gemini 4 Neon", description: "Frontier intelligence with fast end-to-end analysis and reviews.", badge: "Pro", discovered: false },
-  { id: "gemini-4-carbon", label: "Gemini 4 Carbon", description: "Strongest reasoning model for deep long-horizon strategy.", badge: "Deep", discovered: false },
-  { id: "gemini-3.5-flash-lite", label: "Gemini 3.5 Flash-Lite", description: "Fastest, lowest-cost model for instant note capture and parsing.", badge: "Fast", discovered: false },
-];
+function buildPlannerContext(s: Store) {
+  const today = isoDate(0);
+  const month = today.slice(0, 7);
+  const since = isoDate(-30);
+  return {
+    today_local: today,
+    display_currency: s.settings.currency ?? "USD",
+    base_currency_note: "money_entries.amount_minor is stored in USD cents (100 = $1.00).",
+    themes: s.tables.themes ?? [],
+    goals: s.tables.goals ?? [],
+    tasks: (s.tables.tasks ?? []).slice(-120),
+    recent_time_entries: (s.tables.time_entries ?? []).slice(-80),
+    this_month_money_entries: (s.tables.money_entries ?? []).filter((m) => String(m.date ?? "").startsWith(month)),
+    routines: s.tables.routines ?? [],
+    routine_logs_last_30_days: (s.tables.routine_logs ?? []).filter((row) => String(row.date ?? "") >= since),
+  };
+}
 
-export async function browserFallbackInvoke<T>(cmd: string, args: Record<string, unknown> = {}): Promise<T> {
+function buildUsageSummary(s: Store): AiUsageSummary {
+  const rows = (s.tables.ai_usage_logs ?? []) as unknown as AiUsageLogItem[];
+  const todayStr = isoDate(0);
+  const curMonth = todayStr.slice(0, 7);
+
+  let todayReq = 0,
+    todayIn = 0,
+    todayOut = 0,
+    todayThought = 0,
+    todayCached = 0,
+    todayTotal = 0,
+    todayLatency = 0;
+  let monthReq = 0,
+    monthIn = 0,
+    monthOut = 0,
+    monthThought = 0,
+    monthCached = 0,
+    monthTotal = 0,
+    monthErrors = 0,
+    monthRateLimits = 0;
+  let allReq = 0,
+    allIn = 0,
+    allOut = 0,
+    allThought = 0,
+    allTotal = 0;
+
+  const dailyMap = new Map<string, { requests: number; total_tokens: number }>();
+  for (let offset = -6; offset <= 0; offset++) {
+    dailyMap.set(isoDate(offset), { requests: 0, total_tokens: 0 });
+  }
+  const modelMap = new Map<
+    string,
+    { requests: number; input_tokens: number; output_tokens: number; thought_tokens: number; total_tokens: number }
+  >();
+
+  for (const r of rows) {
+    const day = localDayOfIso(String(r.created_at ?? ""));
+    const model = String(r.model || "unknown");
+    const inp = Number(r.input_tokens || 0);
+    const outp = Number(r.output_tokens || 0);
+    const thought = Number(r.thought_tokens || 0);
+    const cached = Number(r.cached_tokens || 0);
+    const total = Number(r.total_tokens || 0);
+    const latency = Number(r.latency_ms || 0);
+
+    allReq++;
+    allIn += inp;
+    allOut += outp;
+    allThought += thought;
+    allTotal += total;
+
+    if (day === todayStr) {
+      todayReq++;
+      todayIn += inp;
+      todayOut += outp;
+      todayThought += thought;
+      todayCached += cached;
+      todayTotal += total;
+      todayLatency += latency;
+    }
+    if (day.startsWith(curMonth)) {
+      monthReq++;
+      monthIn += inp;
+      monthOut += outp;
+      monthThought += thought;
+      monthCached += cached;
+      monthTotal += total;
+      if (r.status !== "ok") monthErrors++;
+      if (String(r.error_code ?? "").includes("429")) monthRateLimits++;
+    }
+    const bucket = dailyMap.get(day);
+    if (bucket) {
+      bucket.requests++;
+      bucket.total_tokens += total;
+    }
+    const cur = modelMap.get(model) ?? {
+      requests: 0,
+      input_tokens: 0,
+      output_tokens: 0,
+      thought_tokens: 0,
+      total_tokens: 0,
+    };
+    cur.requests++;
+    cur.input_tokens += inp;
+    cur.output_tokens += outp;
+    cur.thought_tokens += thought;
+    cur.total_tokens += total;
+    modelMap.set(model, cur);
+  }
+
+  return {
+    today: {
+      requests: todayReq,
+      input_tokens: todayIn,
+      output_tokens: todayOut,
+      thought_tokens: todayThought,
+      cached_tokens: todayCached,
+      total_tokens: todayTotal,
+      avg_latency_ms: todayReq > 0 ? Math.round(todayLatency / todayReq) : 0,
+    },
+    month: {
+      requests: monthReq,
+      input_tokens: monthIn,
+      output_tokens: monthOut,
+      thought_tokens: monthThought,
+      cached_tokens: monthCached,
+      total_tokens: monthTotal,
+      errors: monthErrors,
+      rate_limits: monthRateLimits,
+    },
+    all_time: {
+      requests: allReq,
+      input_tokens: allIn,
+      output_tokens: allOut,
+      thought_tokens: allThought,
+      total_tokens: allTotal,
+    },
+    daily_7d: Array.from(dailyMap.entries()).map(([date, v]) => ({
+      date,
+      requests: v.requests,
+      total_tokens: v.total_tokens,
+    })),
+    by_model: Array.from(modelMap.entries())
+      .map(([model, v]) => ({ model, ...v }))
+      .sort((a, b) => b.total_tokens - a.total_tokens),
+    recent: [...rows].reverse().slice(0, 20),
+    monthly_token_budget: s.aiConfig.monthlyTokenBudget || DEFAULT_MONTHLY_BUDGET,
+  };
+}
+
+function applyAction(s: Store, act: AiSuggestedAction) {
+  const today = isoDate(0);
+  const resolveThemeId = () => {
+    if (act.theme_id && (s.tables.themes ?? []).some((t) => Number(t.id) === act.theme_id)) {
+      return act.theme_id;
+    }
+    if (act.theme_name?.trim()) {
+      const found = (s.tables.themes ?? []).find(
+        (t) => String(t.name).toLowerCase() === act.theme_name!.trim().toLowerCase(),
+      );
+      if (found) return Number(found.id);
+      const id = s.nextId++;
+      s.tables.themes.push({ id, name: act.theme_name.trim(), color: "#5749F4" });
+      return id;
+    }
+    return Number((s.tables.themes ?? [])[0]?.id ?? 1);
+  };
+
+  if (act.type === "create_theme") {
+    const name = (act.title || act.theme_name || "").trim();
+    if (!name) throw new Error("Theme name is required");
+    const id = s.nextId++;
+    s.tables.themes.push({ id, name, color: act.color || "#5749F4" });
+    save(s);
+    return { ok: true, id, summary: `Created theme "${name}"` };
+  }
+  if (act.type === "create_goal") {
+    const title = (act.title || "").trim();
+    if (!title) throw new Error("Goal title is required");
+    const id = s.nextId++;
+    s.tables.goals.push({
+      id,
+      title,
+      horizon: act.horizon || "month",
+      deadline: act.deadline || null,
+      theme_id: resolveThemeId(),
+      status: "active",
+      notes: act.notes || "",
+    });
+    save(s);
+    return { ok: true, id, summary: `Created goal "${title}"` };
+  }
+  if (act.type === "create_task") {
+    const title = (act.title || "").trim();
+    if (!title) throw new Error("Task title is required");
+    const id = s.nextId++;
+    s.tables.tasks.push({
+      id,
+      title,
+      goal_id: act.goal_id ?? null,
+      theme_id: resolveThemeId(),
+      planned_date: act.planned_date || today,
+      status: "planned",
+      created_at: new Date().toISOString(),
+      notes: act.notes || "",
+      estimate_mins: act.estimate_mins ?? null,
+      priority: act.priority || "normal",
+    });
+    save(s);
+    return { ok: true, id, summary: `Added task "${title}" for ${act.planned_date || today}` };
+  }
+  if (act.type === "complete_task" && act.task_id) {
+    s.tables.tasks = s.tables.tasks.map((t) =>
+      Number(t.id) === act.task_id ? { ...t, status: "done" } : t,
+    );
+    save(s);
+    return { ok: true, summary: `Marked task #${act.task_id} done` };
+  }
+  if (act.type === "reschedule_task" && act.task_id) {
+    const to = act.planned_date || today;
+    s.tables.tasks = s.tables.tasks.map((t) =>
+      Number(t.id) === act.task_id ? { ...t, planned_date: to } : t,
+    );
+    save(s);
+    return { ok: true, summary: `Rescheduled task #${act.task_id} to ${to}` };
+  }
+  if (act.type === "create_money_entry") {
+    const amountMinor = Math.max(1, Math.round(Math.abs(Number(act.amount_usd || 0)) * 100));
+    const id = s.nextId++;
+    s.tables.money_entries.push({
+      id,
+      amount_minor: amountMinor,
+      direction: act.direction === "in" ? "in" : "out",
+      category: act.category || "General",
+      date: act.date || today,
+      task_id: act.task_id ?? null,
+      goal_id: act.goal_id ?? null,
+      note: act.notes || "",
+    });
+    save(s);
+    return { ok: true, id, summary: `Logged $${(amountMinor / 100).toFixed(2)} (${act.category || "General"})` };
+  }
+  if (act.type === "create_routine") {
+    const title = (act.title || "").trim();
+    if (!title) throw new Error("Routine title is required");
+    const id = s.nextId++;
+    const sortOrder = (s.tables.routines ?? []).reduce(
+      (max, row) => Math.max(max, Number(row.sort_order ?? 0)),
+      -1,
+    ) + 1;
+    s.tables.routines.push({
+      id,
+      title,
+      time_of_day: act.time_of_day || "anytime",
+      color: act.color || "#5749F4",
+      sort_order: sortOrder,
+      active: 1,
+      created_at: new Date().toISOString(),
+    });
+    save(s);
+    return { ok: true, id, summary: `Created non-negotiable "${title}"` };
+  }
+  throw new Error(`Unknown AI action type: ${act.type}`);
+}
+
+export async function browserFallbackInvoke<T>(
+  cmd: string,
+  args: Record<string, unknown> = {},
+): Promise<T> {
   const s = load();
   const table = String(args.table ?? "");
 
@@ -235,6 +572,9 @@ export async function browserFallbackInvoke<T>(cmd: string, args: Record<string,
     case "insert_row": {
       const id = s.nextId++;
       const row = { id, ...(args.row as Row) };
+      if (table === "routines" && !String((args.row as Row).title ?? "").trim()) {
+        throw new Error("Routine title cannot be empty.");
+      }
       s.tables[table] = [...(s.tables[table] ?? []), row];
       save(s);
       return { id } as T;
@@ -242,6 +582,9 @@ export async function browserFallbackInvoke<T>(cmd: string, args: Record<string,
     case "update_row": {
       const id = Number(args.id);
       const patch = args.row as Row;
+      if (table === "routines" && "title" in patch && !String(patch.title ?? "").trim()) {
+        throw new Error("Routine title cannot be empty.");
+      }
       s.tables[table] = (s.tables[table] ?? []).map((r) => (Number(r.id) === id ? { ...r, ...patch } : r));
       if (table === "tasks" && patch.status === "done") {
         const now = new Date().toISOString();
@@ -256,6 +599,9 @@ export async function browserFallbackInvoke<T>(cmd: string, args: Record<string,
       const id = Number(args.id);
       if (table === "themes") return browserFallbackInvoke<T>("delete_theme", { id, reassignToId: null });
       s.tables[table] = (s.tables[table] ?? []).filter((r) => Number(r.id) !== id);
+      if (table === "routines") {
+        s.tables.routine_logs = (s.tables.routine_logs ?? []).filter((r) => Number(r.routine_id) !== id);
+      }
       if (table === "tasks") {
         s.tables.time_entries = (s.tables.time_entries ?? []).filter((e) => Number(e.task_id) !== id);
         s.tables.money_entries = (s.tables.money_entries ?? []).map((m) =>
@@ -300,11 +646,39 @@ export async function browserFallbackInvoke<T>(cmd: string, args: Record<string,
       save(s);
       return { moved } as T;
     }
+    case "toggle_routine_log": {
+      const routineId = Number(args.routineId);
+      const date = String(args.date ?? "");
+      const existing = (s.tables.routine_logs ?? []).find(
+        (row) => Number(row.routine_id) === routineId && row.date === date,
+      );
+      if (existing) {
+        s.tables.routine_logs = s.tables.routine_logs.filter((row) => row !== existing);
+        save(s);
+        return { completed: false } as T;
+      }
+      if (!(s.tables.routines ?? []).some((row) => Number(row.id) === routineId)) {
+        throw new Error("Routine not found.");
+      }
+      s.tables.routine_logs.push({
+        id: s.nextId++,
+        routine_id: routineId,
+        date,
+        completed_at: new Date().toISOString(),
+      });
+      save(s);
+      return { completed: true } as T;
+    }
     case "clear_ai_messages": {
       const sid = args.sessionId as string | undefined;
       s.tables.ai_messages = sid
         ? (s.tables.ai_messages ?? []).filter((m) => m.session_id !== sid)
         : [];
+      save(s);
+      return { ok: true } as T;
+    }
+    case "clear_ai_usage": {
+      s.tables.ai_usage_logs = [];
       save(s);
       return { ok: true } as T;
     }
@@ -343,60 +717,93 @@ export async function browserFallbackInvoke<T>(cmd: string, args: Record<string,
       return { ok: true } as T;
     }
     case "export_all_data":
-      return { exported_at: new Date().toISOString(), version: 2, ...s.tables } as T;
+      return { exported_at: new Date().toISOString(), version: 4, ...s.tables } as T;
     case "list_backups":
       return [] as T;
     case "backup_status":
-      return { folder: s.settings.backup_folder ?? "", last_backup_at: s.settings.last_backup_at ?? "", keep: s.settings.backup_keep ?? "30", encrypted: Boolean(s.settings.backup_passphrase) } as T;
+      return {
+        folder: s.settings.backup_folder ?? "",
+        last_backup_at: s.settings.last_backup_at ?? "",
+        keep: s.settings.backup_keep ?? "30",
+        encrypted: Boolean(s.settings.backup_passphrase),
+      } as T;
     case "backup_now":
     case "schedule_backup":
       throw new Error("Backups run inside the Tauri desktop app.");
     case "pick_backup_folder":
       return { path: null } as T;
-    case "google_auth_status":
-      return s.auth as T;
-    case "google_list_models":
-      return { models: PREVIEW_MODELS, live: false } as T;
-    case "google_open_url": {
-      window.open(String(args.url), "_blank", "noopener,noreferrer");
+
+    /* ---------------------------------------------------------- AI & Voice */
+
+    case "ai_get_config":
+      return s.aiConfig as T;
+    case "ai_save_config": {
+      s.aiConfig = args.config as AiConfig;
+      save(s);
+      return s.aiConfig as T;
+    }
+    case "open_external_url": {
+      const url = String(args.url ?? "");
+      if (url.startsWith("https://") || url.startsWith("http://")) {
+        window.open(url, "_blank", "noopener,noreferrer");
+      }
       return { ok: true } as T;
     }
-    case "google_set_preferences": {
-      if (typeof args.preferredModel === "string") s.auth.preferred_model = args.preferredModel;
-      if (typeof args.preferApiKey === "boolean") s.auth.prefer_api_key = args.preferApiKey;
-      if (typeof args.quotaProjectId === "string") s.auth.quota_project_id = args.quotaProjectId;
+    case "get_planner_context":
+      return buildPlannerContext(s) as T;
+    case "save_ai_turn": {
+      const now = new Date().toISOString();
+      s.tables.ai_messages.push({
+        id: s.nextId++,
+        session_id: String(args.sessionId ?? "default"),
+        role: "user",
+        content: String(args.userContent ?? ""),
+        model: "",
+        actions_json: null,
+        usage_json: null,
+        created_at: now,
+      });
+      const id = s.nextId++;
+      s.tables.ai_messages.push({
+        id,
+        session_id: String(args.sessionId ?? "default"),
+        role: "assistant",
+        content: String(args.assistantContent ?? ""),
+        model: String(args.model ?? ""),
+        actions_json: JSON.stringify(args.actions ?? []),
+        usage_json: JSON.stringify(args.usage ?? {}),
+        created_at: new Date().toISOString(),
+      });
       save(s);
-      return s.auth as T;
+      return { id } as T;
     }
-    case "google_save_oauth_config": {
-      s.auth.oauth_client_id = String(args.clientId ?? "").trim();
-      s.auth.oauth_configured = Boolean(s.auth.oauth_client_id);
-      if (String(args.clientSecret ?? "").trim()) s.auth.has_oauth_client_secret = true;
-      if (typeof args.quotaProjectId === "string") s.auth.quota_project_id = args.quotaProjectId.trim();
+    case "log_ai_usage_event": {
+      const entry = (args.entry ?? {}) as Record<string, unknown>;
+      s.tables.ai_usage_logs = [
+        ...(s.tables.ai_usage_logs ?? []),
+        {
+          id: s.nextId++,
+          created_at: new Date().toISOString(),
+          model: String(entry.model ?? ""),
+          transport: String(entry.transport ?? ""),
+          feature: String(entry.feature ?? "chat"),
+          input_tokens: Number(entry.input_tokens ?? 0),
+          output_tokens: Number(entry.output_tokens ?? 0),
+          thought_tokens: Number(entry.thought_tokens ?? 0),
+          cached_tokens: Number(entry.cached_tokens ?? 0),
+          total_tokens: Number(entry.total_tokens ?? 0),
+          latency_ms: Number(entry.latency_ms ?? 0),
+          status: String(entry.status ?? "ok"),
+          error_code: String(entry.error_code ?? ""),
+        },
+      ];
       save(s);
-      return s.auth as T;
+      return { ok: true } as T;
     }
-    case "google_save_api_key": {
-      const k = String(args.apiKey ?? "").trim();
-      s.auth.has_api_key = Boolean(k);
-      s.auth.api_key_preview = k.length >= 10 ? `${k.slice(0, 6)}…${k.slice(-4)}` : k ? "••••••••" : "";
-      s.auth.connected = s.auth.has_oauth || s.auth.has_api_key;
-      s.auth.active_transport = s.auth.has_api_key ? "api_key" : s.auth.has_oauth ? "oauth" : "none";
-      save(s);
-      return s.auth as T;
-    }
-    case "google_sign_out": {
-      s.auth.has_oauth = false;
-      s.auth.profile = null;
-      if (args.clearApiKey) {
-        s.auth.has_api_key = false;
-        s.auth.api_key_preview = "";
-      }
-      s.auth.connected = s.auth.has_api_key;
-      s.auth.active_transport = s.auth.has_api_key ? "api_key" : "none";
-      save(s);
-      return s.auth as T;
-    }
+    case "ai_usage_summary":
+      return buildUsageSummary(s) as T;
+    case "ai_apply_action":
+      return applyAction(s, args.action as AiSuggestedAction) as T;
     default:
       throw new Error(`Command "${cmd}" requires the Tauri desktop shell.`);
   }

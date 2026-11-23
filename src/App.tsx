@@ -15,6 +15,7 @@ import { GoalsPage, TodayPage } from "./pages/planning";
 import { MoneyPage, ReportsPage } from "./pages/money";
 import { FirstRunPage, SettingsPage } from "./pages/setup";
 import { AiDrawer, AiPage } from "./pages/ai";
+import { RoutinesPage } from "./pages/routines";
 import {
   AiDrawerContext,
   captureWeeklySnapshot,
@@ -187,6 +188,11 @@ const goalsRoute = createRoute({
     return <GoalsPage tab={tab} />;
   },
 });
+const routinesRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/routines",
+  component: RoutinesPage,
+});
 const moneyRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: "/money",
@@ -226,6 +232,7 @@ const indexRoute = createRoute({
 const routeTree = rootRoute.addChildren([
   indexRoute,
   todayRoute,
+  routinesRoute,
   goalsRoute,
   moneyRoute,
   reportsRoute,

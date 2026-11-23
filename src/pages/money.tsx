@@ -1,7 +1,8 @@
 import { useEffect, useState } from "react";
+import { useNavigate } from "@tanstack/react-router";
 import { useQueryClient } from "@tanstack/react-query";
 import { SegmentedControl, useToast } from "@halo-ds/react";
-import { mondayOf, todayLocal, type Row } from "../lib/api";
+import { localDayOfIso, mondayOf, todayLocal, type Row } from "../lib/api";
 import {
   captureWeeklySnapshot,
   useAiDrawer,
@@ -9,6 +10,8 @@ import {
   useGoals,
   useMoney,
   useMoneyMut,
+  useRoutineLogs,
+  useRoutines,
   useSettings,
   useTasks,
   useThemes,
@@ -548,13 +551,13 @@ export function MoneyPage() {
           <div className="strip-cell">
             <span className="stat-label">Money in</span>
             <div className="strip-value pos">
-              +<Money amount={inDisplay} />
+              <Money amount={inDisplay} />
             </div>
           </div>
           <div className="strip-cell">
             <span className="stat-label">Money out</span>
             <div className="strip-value neg">
-              −<Money amount={outDisplay} />
+              <Money amount={outDisplay} />
             </div>
           </div>
           <div className="strip-cell">
@@ -644,7 +647,6 @@ export function MoneyPage() {
                       </button>
                       <div>
                         <div className={`money-amount ${e.direction === "in" ? "pos" : "neg"}`}>
-                          {e.direction === "in" ? "+" : "−"}
                           <Money amount={display(Number(e.amount_minor))} />
                         </div>
                       </div>
@@ -681,7 +683,7 @@ export function MoneyPage() {
                     <span style={{ width: `${Math.round((value / maxCat) * 100)}%` }} />
                   </span>
                   <span className="num neg">
-                    −<Money minor={value} />
+                    <Money minor={value} />
                   </span>
                 </div>
               ))}
@@ -708,13 +710,11 @@ export function MoneyPage() {
                         color: v.in - v.out >= 0 ? "#1f7a1f" : "var(--destructive)",
                       }}
                     >
-                      {v.in - v.out >= 0 ? "+" : "−"}
                       <Money minor={Math.abs(v.in - v.out)} />
                     </span>
                   </div>
                   <div style={{ fontSize: 12, color: "var(--muted-foreground)", marginTop: 4 }}>
-                    <Money minor={v.in} /> in · {v.out > 0 ? "−" : ""}
-                    <Money minor={v.out} /> out
+                    <Money minor={v.in} /> in · <Money minor={v.out} /> out
                   </div>
                 </div>
               ))}
@@ -834,7 +834,6 @@ function SnapshotModal({ report, onClose }: { report: Row; onClose: () => void }
         <div className="strip-cell" style={{ padding: "12px 16px" }}>
           <span className="stat-label">Net</span>
           <div className={`strip-value ${inMinor - outMinor >= 0 ? "pos" : "neg"}`} style={{ fontSize: 20 }}>
-            {inMinor - outMinor >= 0 ? "+" : "−"}
             <Money minor={Math.abs(inMinor - outMinor)} />
           </div>
         </div>
@@ -1112,17 +1111,16 @@ export function ReportsPage() {
           <div className="strip-cell">
             <span className="stat-label">Money in</span>
             <div className="strip-value pos">
-              +<Money amount={display(curIn)} />
+              <Money amount={display(curIn)} />
             </div>
             <div className="field-hint">
-              {curIn - prevIn >= 0 ? "+" : "−"}
               <Money amount={display(Math.abs(curIn - prevIn))} /> vs last {mode}
             </div>
           </div>
           <div className="strip-cell">
             <span className="stat-label">Money out</span>
             <div className="strip-value neg">
-              −<Money amount={display(curOut)} />
+              <Money amount={display(curOut)} />
             </div>
             <div className="field-hint">
               {prevOut ? (
@@ -1142,7 +1140,6 @@ export function ReportsPage() {
               <Money amount={display(curIn) - display(curOut)} />
             </div>
             <div className="field-hint">
-              {curIn - curOut - (prevIn - prevOut) >= 0 ? "+" : "−"}
               <Money amount={display(Math.abs(curIn - curOut - (prevIn - prevOut)))} /> vs last{" "}
               {mode}
             </div>
@@ -1152,6 +1149,8 @@ export function ReportsPage() {
 
       <div className="report-body">
         <div className="report-main">
+          <RoutineConsistency start={start} end={end} />
+
           <Card>
             <div className="card-head plain">
               <Icon name="target" size={18} className="icon-muted" />
@@ -1363,7 +1362,7 @@ export function ReportsPage() {
                     />
                   </span>
                   <span className="num neg">
-                    −<Money minor={val} />
+                    <Money minor={val} />
                   </span>
                 </div>
               ))}
@@ -1458,7 +1457,6 @@ export function ReportsPage() {
                       </div>
                     </div>
                     <span className={`fig ${net >= 0 ? "pos" : "neg"}`}>
-                      {net >= 0 ? "+" : "−"}
                       <Money minor={Math.abs(net)} />
                     </span>
                   </button>
@@ -1471,5 +1469,116 @@ export function ReportsPage() {
 
       {inspecting && <SnapshotModal report={inspecting} onClose={() => setInspecting(null)} />}
     </section>
+  );
+}
+
+/* ------------------------------------------------------ routine consistency */
+
+function RoutineConsistency({ start, end }: { start: string; end: string }) {
+  const { data: routines = [] } = useRoutines();
+  const { data: logs = [] } = useRoutineLogs();
+  const navigate = useNavigate();
+  const today = todayLocal();
+
+  const doneIndex = new Map<string, Set<number>>();
+  for (const log of logs) {
+    const day = String(log.date ?? "");
+    const set = doneIndex.get(day) ?? new Set<number>();
+    set.add(Number(log.routine_id));
+    doneIndex.set(day, set);
+  }
+
+  const periodEnd = end > today ? today : end;
+  const days: string[] = [];
+  let cursor = start;
+  while (cursor <= periodEnd && days.length < 62) {
+    days.push(cursor);
+    const next = new Date(cursor + "T12:00:00");
+    next.setDate(next.getDate() + 1);
+    cursor = `${next.getFullYear()}-${String(next.getMonth() + 1).padStart(2, "0")}-${String(next.getDate()).padStart(2, "0")}`;
+  }
+
+  const createdDay = (r: Row) => {
+    const raw = String(r.created_at ?? "");
+    if (!raw) return "";
+    return raw.length === 10 ? raw : localDayOfIso(raw);
+  };
+
+  const eligibleFor = (day: string) =>
+    routines.filter(
+      (r) =>
+        createdDay(r) <= day &&
+        (Number(r.active) === 1 || (doneIndex.get(day)?.has(Number(r.id)) ?? false)),
+    );
+
+  let doneTotal = 0;
+  let eligibleTotal = 0;
+  let perfectDays = 0;
+  for (const day of days) {
+    const eligible = eligibleFor(day);
+    const set = doneIndex.get(day) ?? new Set<number>();
+    const done = eligible.filter((r) => set.has(Number(r.id))).length;
+    eligibleTotal += eligible.length;
+    doneTotal += done;
+    if (eligible.length > 0 && done === eligible.length) perfectDays++;
+  }
+  const pct = eligibleTotal ? Math.round((doneTotal / eligibleTotal) * 100) : 0;
+
+  const perRoutine = routines
+    .filter((r) => Number(r.active) === 1)
+    .map((routine) => {
+      const id = Number(routine.id);
+      const created = createdDay(routine);
+      const relevant = days.filter((d) => d >= created);
+      const done = relevant.filter((d) => doneIndex.get(d)?.has(id)).length;
+      return {
+        routine,
+        done,
+        total: relevant.length,
+        pct: relevant.length ? Math.round((done / relevant.length) * 100) : 0,
+      };
+    });
+
+  return (
+    <Card className="routine-report-card">
+      <div className="card-head plain">
+        <Icon name="repeat" size={18} className="icon-muted" />
+        <span className="card-title">Routine consistency</span>
+        <span className="spacer" />
+        <Button size="sm" variant="ghost" onClick={() => navigate({ to: "/routines" })}>
+          Full heatmap <Icon name="arrowRight" size={13} />
+        </Button>
+      </div>
+      <div className="card-body pad">
+        {eligibleTotal === 0 ? (
+          <div className="field-hint">No non-negotiables in this period yet.</div>
+        ) : (
+          <>
+            <div className="routine-report-head">
+              <strong className="hero-figure">{pct}%</strong>
+              <span className="field-hint">
+                {doneTotal}/{eligibleTotal} check-ins · {perfectDays} perfect {perfectDays === 1 ? "day" : "days"}
+              </span>
+            </div>
+            <Progress value={pct} slim success={pct === 100} />
+            <div className="routine-report-bars">
+              {perRoutine.map(({ routine, done, total, pct: rowPct }) => (
+                <div className="routine-report-row" key={routine.id}>
+                  <span className="filter-dot" style={{ background: String(routine.color) }} />
+                  <span className="routine-report-name">{String(routine.title)}</span>
+                  <div className="routine-report-track">
+                    <div
+                      className="routine-report-fill"
+                      style={{ width: `${rowPct}%`, background: String(routine.color) }}
+                    />
+                  </div>
+                  <span className="field-hint">{done}/{total}</span>
+                </div>
+              ))}
+            </div>
+          </>
+        )}
+      </div>
+    </Card>
   );
 }

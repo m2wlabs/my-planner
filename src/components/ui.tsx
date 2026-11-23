@@ -27,14 +27,17 @@ import {
   useToast,
 } from "@halo-ds/react";
 import ScrollArea from "./ScrollArea";
+import { ProviderLogo } from "./ProviderLogo";
 import type { Row } from "../lib/api";
 import { addDays, dateToIso as apiDateToIso, todayLocal } from "../lib/api";
+import { isProviderReady } from "../lib/aiEngine";
 import {
   useAiDrawer,
+  useAiConfig,
+  useAiUsage,
   useCurrency,
   useGoalMut,
   useGoals,
-  useGoogleAuth,
   useRescheduleOverdue,
   useSettings,
   useTaskMut,
@@ -88,8 +91,18 @@ const PATHS: Record<string, string> = {
   logout: "M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4 M16 17l5-5-5-5 M21 12H9",
   external: "M15 3h6v6 M10 14 21 3 M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6",
   arrowRight: "M5 12h14 m-7-7 7 7-7 7",
+  arrowUp: "M12 19V5 m-6 6 6-6 6 6",
+  copy: "M9 9h11v11H9z M5 15H4a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1h10a1 1 0 0 1 1 1v1",
   fileText: "M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z M14 2v6h6 M16 13H8 M16 17H8 M10 9H8",
   zap: "M13 2 3 14h9l-1 8 10-12h-9l1-8z",
+  mic: "M12 2a3 3 0 0 1 3 3v6a3 3 0 0 1-6 0V5a3 3 0 0 1 3-3z M19 11a7 7 0 0 1-14 0 M12 18v4 M8 22h8",
+  micOff: "M3 3l18 18 M9 9v2a3 3 0 0 0 5.1 2.1 M15 10V5a3 3 0 0 0-5.7-1.3 M19 11a7 7 0 0 1-11.3 5.6 M12 18v4 M8 22h8",
+  volume: "M11 5 6 9H2v6h4l5 4z M15.5 8.5a5 5 0 0 1 0 7 M19 5a9 9 0 0 1 0 14",
+  volumeOff: "M11 5 6 9H2v6h4l5 4z M22 9l-6 6 M16 9l6 6",
+  repeat: "m17 2 4 4-4 4 M3 11V9a4 4 0 0 1 4-4h14 M7 22l-4-4 4-4 M21 13v2a4 4 0 0 1-4 4H3",
+  flame: "M12 2c2 4 5 6 5 10a5 5 0 0 1-10 0c0-2 1-3 2-4 0 2 1 3 2 3 1-3 1-6 1-9z",
+  arrowDown: "M12 5v14 m-6-6 6 6 6-6",
+  sliders: "M4 21v-7 M4 10V3 M12 21v-9 M12 8V3 M20 21v-5 M20 12V3 M1 14h6 M9 8h6 M17 16h6",
 };
 
 export function Icon({
@@ -438,12 +451,11 @@ export function Money({
   className?: string;
 }) {
   const { parts, partsOf } = useCurrency();
-  const { sign, symbol, value, symbolLast } =
+  const { symbol, value, symbolLast } =
     amount === undefined ? parts(minor ?? 0) : partsOf(amount);
   const mark = symbol ? <span className="currency-symbol">{symbol}</span> : null;
   return (
     <span className={className}>
-      {sign}
       {symbolLast ? (
         <>
           {value}
@@ -539,6 +551,7 @@ export function PageHead({
 
 const NAV = [
   { to: "/today", label: "Today", icon: "grid" },
+  { to: "/routines", label: "Routines", icon: "repeat" },
   { to: "/goals", label: "Goals", icon: "target" },
   { to: "/money", label: "Money", icon: "wallet" },
   { to: "/reports", label: "Reports", icon: "chart" },
@@ -548,6 +561,7 @@ const NAV = [
 const TITLES: Record<string, string> = {
   "/": "Today",
   "/today": "Today",
+  "/routines": "Routines",
   "/goals": "Goals",
   "/money": "Money",
   "/reports": "Reports",
@@ -568,7 +582,8 @@ export function Layout() {
   const navigate = useNavigate();
   const { openAi } = useAiDrawer();
   const { running } = useRunning();
-  const { data: auth } = useGoogleAuth();
+  const { data: aiConfig } = useAiConfig();
+  const { data: aiUsage } = useAiUsage();
   const { data: tasks = [] } = useTasks();
   const { data: goals = [] } = useGoals();
   const { data: settings = {} } = useSettings();
@@ -630,13 +645,12 @@ export function Layout() {
     );
   };
 
-  const displayName = auth?.profile?.name || (auth?.has_api_key ? "Google AI Studio" : "This device");
-  const displayMeta = auth?.profile?.email
-    ? auth.profile.email
-    : auth?.has_api_key
-      ? `${auth.preferred_model} ready`
-      : "Connect Google AI";
-  const avatarInitials = initialsFrom(auth?.profile?.name, auth?.profile?.email);
+  const enabledProviders = (aiConfig?.providers ?? []).filter((p) => isProviderReady(p));
+  const activeProvider =
+    enabledProviders.find((p) => p.id === aiConfig?.activeProviderId) ?? enabledProviders[0];
+  const displayName = activeProvider?.name || "No AI provider";
+  const displayMeta = activeProvider?.model || "Add an AI provider";
+  const avatarInitials = initialsFrom(activeProvider?.name, activeProvider?.model);
 
   return (
     <div
@@ -656,16 +670,18 @@ export function Layout() {
           <button
             type="button"
             className="side-user side-user-btn"
-            onClick={() => navigate({ to: "/settings", search: { section: "google" } })}
-            title={auth?.connected ? `${displayName} (${displayMeta})` : "Connect Google Account & AI"}
+            onClick={() => navigate({ to: "/settings", search: { section: "ai-providers" } })}
+            title={activeProvider ? `${displayName} (${displayMeta})` : "Connect an AI provider"}
           >
-            <Avatar
-              src={auth?.profile?.picture || undefined}
-              initials={avatarInitials}
-              size="sm"
-              status={auth?.connected ? "online" : undefined}
-              className="avatar"
-            />
+            {activeProvider ? (
+              <ProviderLogo catalogId={activeProvider.catalogId} kind={activeProvider.kind} size={16} />
+            ) : (
+              <Avatar
+                initials={avatarInitials}
+                size="sm"
+                className="avatar"
+              />
+            )}
             <div className="side-user-copy">
               <div className="side-user-name">{displayName}</div>
               <div className="side-user-meta">{displayMeta}</div>
@@ -710,7 +726,7 @@ export function Layout() {
             <>
               <button
                 type="button"
-                className={`ai-pill-btn${auth?.connected ? " is-live" : ""}`}
+                className={`ai-pill-btn${activeProvider ? " is-live" : ""}`}
                 onClick={() => openAi()}
                 title="Open AI Coach (Ctrl+K)"
               >
@@ -816,10 +832,9 @@ export function Layout() {
                 trigger={
                   <button type="button" className="avatar-btn" aria-label="Account and AI status">
                     <Avatar
-                      src={auth?.profile?.picture || undefined}
                       initials={avatarInitials}
                       size="xs"
-                      status={auth?.connected ? "online" : undefined}
+                      status={activeProvider ? "online" : undefined}
                       className="avatar"
                     />
                   </button>
@@ -827,18 +842,19 @@ export function Layout() {
               >
                 <div className="popover-stack">
                   <div className="popover-status-row">
-                    <span className={`chip ${auth?.connected ? "chip-success" : "chip-neutral"}`}>
-                      {auth?.connected
-                        ? auth.active_transport === "oauth"
-                          ? "Google Account OAuth"
-                          : auth.active_transport === "adc"
-                            ? "Google CLI (ADC)"
-                            : "Google AI Studio Key"
-                        : "AI not connected"}
+                    <span className={`chip ${activeProvider ? "chip-success" : "chip-neutral"}`}>
+                      {activeProvider ? activeProvider.name : "AI not connected"}
                     </span>
-                    {auth?.connected && (
-                      <span className="field-hint">{auth.preferred_model}</span>
-                    )}
+                    {activeProvider && <span className="field-hint">{activeProvider.model}</span>}
+                  </div>
+                  <div className="popover-ai-summary">
+                    <div className="popover-ai-row">
+                      <span className="field-hint">Today's AI usage</span>
+                      <strong style={{ fontSize: 12 }}>
+                        {(aiUsage?.today.total_tokens ?? 0).toLocaleString()} tok ·{" "}
+                        {aiUsage?.today.requests ?? 0} calls
+                      </strong>
+                    </div>
                   </div>
                   <div className="popover-actions-col">
                     <Button
@@ -858,11 +874,13 @@ export function Layout() {
                       className="btn-block"
                       onClick={() => {
                         setAcctOpen(false);
-                        navigate({ to: "/settings", search: { section: "google" } });
+                        navigate({
+                          to: "/settings",
+                          search: { section: "ai-providers" },
+                        });
                       }}
                     >
-                      <Icon name="settings" size={14} />{" "}
-                      {auth?.connected ? "Manage Google Account & AI" : "Connect Google Account"}
+                      <Icon name="sliders" size={14} /> AI &amp; Voice Settings
                     </Button>
                   </div>
                 </div>

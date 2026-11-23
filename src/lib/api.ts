@@ -22,37 +22,109 @@ export interface BackupItem {
   encrypted?: boolean;
 }
 
-export interface GoogleProfile {
-  sub: string;
-  email: string;
-  name: string;
-  picture: string;
-}
+export type AiProviderKind = "anthropic" | "openai" | "google" | "openai-compatible";
 
-export interface GoogleAuthStatus {
-  connected: boolean;
-  has_oauth: boolean;
-  has_api_key: boolean;
-  api_key_preview: string;
-  auth_method: string;
-  active_transport: "oauth" | "adc" | "api_key" | "none";
-  prefer_api_key: boolean;
-  profile: GoogleProfile | null;
-  oauth_configured: boolean;
-  oauth_client_id: string;
-  has_oauth_client_secret: boolean;
-  quota_project_id: string;
-  preferred_model: string;
-  adc_available: boolean;
-  scopes: string[];
-}
-
-export interface AiModelInfo {
+export interface AiProviderConfig {
   id: string;
-  label: string;
-  description: string;
-  badge: string;
-  discovered: boolean;
+  catalogId?: string;
+  kind: AiProviderKind;
+  name: string;
+  apiKey: string;
+  baseUrl: string;
+  model: string;
+  discoveredModels?: string[];
+  verifiedAt?: string;
+  enabled: boolean;
+}
+
+export type VoiceTtsProvider = "browser" | "openai" | "google" | "openai-compatible";
+export type VoiceSttProvider = "browser" | "openai" | "openai-compatible";
+
+export interface AiVoiceConfig {
+  ttsProvider: VoiceTtsProvider;
+  ttsModel: string;
+  ttsVoice: string;
+  ttsBaseUrl: string;
+  ttsApiKey: string;
+  ttsRate: number;
+  sttProvider: VoiceSttProvider;
+  sttModel: string;
+  sttBaseUrl: string;
+  sttApiKey: string;
+  autoSpeakReplies: boolean;
+  autoSendVoice: boolean;
+}
+
+export interface AiConfig {
+  schemaVersion?: number;
+  activeProviderId: string;
+  providers: AiProviderConfig[];
+  monthlyTokenBudget: number;
+  voice: AiVoiceConfig;
+}
+
+export interface AiUsageDailyPoint {
+  date: string;
+  requests: number;
+  total_tokens: number;
+}
+
+export interface AiUsageModelRow {
+  model: string;
+  requests: number;
+  input_tokens: number;
+  output_tokens: number;
+  thought_tokens: number;
+  total_tokens: number;
+}
+
+export interface AiUsageLogItem {
+  id: number;
+  created_at: string;
+  model: string;
+  transport: string;
+  feature: string;
+  input_tokens: number;
+  output_tokens: number;
+  thought_tokens: number;
+  cached_tokens: number;
+  total_tokens: number;
+  latency_ms: number;
+  status: string;
+  error_code: string;
+}
+
+export interface AiUsageSummary {
+  today: {
+    requests: number;
+    input_tokens: number;
+    output_tokens: number;
+    thought_tokens: number;
+    cached_tokens: number;
+    total_tokens: number;
+    avg_latency_ms: number;
+  };
+  month: {
+    requests: number;
+    input_tokens: number;
+    output_tokens: number;
+    thought_tokens: number;
+    cached_tokens: number;
+    total_tokens: number;
+    errors: number;
+    rate_limits: number;
+  };
+  all_time: {
+    requests: number;
+    input_tokens: number;
+    output_tokens: number;
+    thought_tokens: number;
+    total_tokens: number;
+  };
+  daily_7d: AiUsageDailyPoint[];
+  by_model: AiUsageModelRow[];
+  recent: AiUsageLogItem[];
+  monthly_token_budget: number;
 }
 
 export interface AiSuggestedAction {
@@ -62,7 +134,8 @@ export interface AiSuggestedAction {
     | "reschedule_task"
     | "create_goal"
     | "create_money_entry"
-    | "create_theme";
+    | "create_theme"
+    | "create_routine";
   label: string;
   title?: string;
   notes?: string;
@@ -80,15 +153,16 @@ export interface AiSuggestedAction {
   category?: string;
   date?: string;
   color?: string;
+  time_of_day?: "morning" | "afternoon" | "evening" | "anytime";
 }
 
-export interface AiChatResponse {
-  id?: number;
-  reply: string;
-  suggested_actions: AiSuggestedAction[];
-  model: string;
-  usage?: Record<string, unknown> | null;
-  created_at?: string;
+export interface AiTurnUsage {
+  input_tokens: number;
+  output_tokens: number;
+  thought_tokens: number;
+  cached_tokens: number;
+  total_tokens: number;
+  latency_ms?: number;
 }
 
 /* ------------------------------------------------------------- DB & timer */
@@ -106,6 +180,7 @@ export const rescheduleOverdue = (toDate: string) =>
   invoke<{ moved: number }>("reschedule_overdue", { toDate });
 export const clearAiMessages = (sessionId?: string) =>
   invoke<{ ok: boolean }>("clear_ai_messages", { sessionId: sessionId ?? null });
+export const clearAiUsage = () => invoke<{ ok: boolean }>("clear_ai_usage");
 export const startTimer = (taskId: number) => invoke<{ id: number; start_utc: string }>("start_timer", { taskId });
 export const stopTimer = () => invoke<{ ok: boolean }>("stop_timer");
 export const getSettings = () => invoke<Record<string, string>>("get_settings");
@@ -114,6 +189,8 @@ export const initDb = () => invoke<{ running_timer: Row | null }>("init_db");
 export const saveWeeklyReport = (weekStart: string, snapshot: unknown) =>
   invoke<{ ok: boolean }>("save_weekly_report", { weekStart, snapshot });
 export const exportAllData = () => invoke<Record<string, unknown>>("export_all_data");
+export const toggleRoutineLog = (routineId: number, date: string) =>
+  invoke<{ completed: boolean }>("toggle_routine_log", { routineId, date });
 
 /* ---------------------------------------------------------------- backups */
 
@@ -126,73 +203,42 @@ export const pickBackupFolder = () => invoke<{ path: string | null }>("pick_back
 export const backupStatus = () =>
   invoke<{ folder: string; last_backup_at: string; keep: string; encrypted: boolean }>("backup_status");
 
-/* ---------------------------------------------------- Google Account & AI */
+/* ------------------------------------------------------------ AI & Voice */
 
-export const googleAuthStatus = () => invoke<GoogleAuthStatus>("google_auth_status");
-export const googleOpenUrl = (url: string) => invoke<{ ok: boolean }>("google_open_url", { url });
-export const googleSaveOauthConfig = (
-  clientId: string,
-  clientSecret: string,
-  quotaProjectId?: string,
-) =>
-  invoke<GoogleAuthStatus>("google_save_oauth_config", {
-    clientId,
-    clientSecret,
-    quotaProjectId: quotaProjectId ?? null,
-  });
-export const googleImportClientJson = (jsonText: string) =>
-  invoke<GoogleAuthStatus>("google_import_client_json", { jsonText });
-export const googlePickClientJson = () =>
-  invoke<{ cancelled: boolean; status?: GoogleAuthStatus }>("google_pick_client_json");
-export const googleSaveApiKey = (apiKey: string, preferApiKey?: boolean) =>
-  invoke<GoogleAuthStatus>("google_save_api_key", {
-    apiKey,
-    preferApiKey: preferApiKey ?? null,
-  });
-export const googleSetPreferences = (prefs: {
-  preferredModel?: string;
-  preferApiKey?: boolean;
-  quotaProjectId?: string;
+export const aiGetConfig = () => invoke<AiConfig>("ai_get_config");
+export const aiSaveConfig = (config: AiConfig) => invoke<AiConfig>("ai_save_config", { config });
+export const openExternalUrl = (url: string) => invoke<{ ok: boolean }>("open_external_url", { url });
+export const getPlannerContext = () => invoke<Record<string, unknown>>("get_planner_context");
+export const saveAiTurn = (params: {
+  sessionId: string;
+  userContent: string;
+  assistantContent: string;
+  model: string;
+  actions: AiSuggestedAction[];
+  usage: AiTurnUsage;
 }) =>
-  invoke<GoogleAuthStatus>("google_set_preferences", {
-    preferredModel: prefs.preferredModel ?? null,
-    preferApiKey: prefs.preferApiKey ?? null,
-    quotaProjectId: prefs.quotaProjectId ?? null,
+  invoke<{ id: number }>("save_ai_turn", {
+    sessionId: params.sessionId,
+    userContent: params.userContent,
+    assistantContent: params.assistantContent,
+    model: params.model,
+    actions: params.actions,
+    usage: params.usage,
   });
-export const googleOauthSignIn = () => invoke<GoogleAuthStatus>("google_oauth_sign_in");
-export const googleOauthCancel = () => invoke<{ ok: boolean }>("google_oauth_cancel");
-export const googleImportAdc = () => invoke<GoogleAuthStatus>("google_import_adc");
-export const googleSignOut = (clearApiKey = false) =>
-  invoke<GoogleAuthStatus>("google_sign_out", { clearApiKey });
-export const googleListModels = () =>
-  invoke<{ models: AiModelInfo[]; live: boolean }>("google_list_models");
-export const googleTestConnection = () =>
-  invoke<{ ok: boolean; model: string; transport: string; reply: string }>("google_test_connection");
-
-export const aiChat = (params: {
-  prompt: string;
-  sessionId?: string;
-  model?: string;
-  extraContext?: string;
-}) =>
-  invoke<AiChatResponse>("ai_chat", {
-    prompt: params.prompt,
-    sessionId: params.sessionId ?? "default",
-    model: params.model ?? null,
-    extraContext: params.extraContext ?? null,
-  });
-
-export const aiQuickPrompt = (params: {
-  prompt: string;
-  model?: string;
-  extraContext?: string;
-}) =>
-  invoke<AiChatResponse>("ai_quick_prompt", {
-    prompt: params.prompt,
-    model: params.model ?? null,
-    extraContext: params.extraContext ?? null,
-  });
-
+export const logAiUsageEvent = (entry: {
+  model: string;
+  transport: string;
+  feature: string;
+  input_tokens: number;
+  output_tokens: number;
+  thought_tokens: number;
+  cached_tokens: number;
+  total_tokens: number;
+  latency_ms: number;
+  status: "ok" | "error";
+  error_code: string;
+}) => invoke<{ ok: boolean }>("log_ai_usage_event", { entry });
+export const aiUsageSummary = () => invoke<AiUsageSummary>("ai_usage_summary");
 export const aiApplyAction = (action: AiSuggestedAction) =>
   invoke<{ ok: boolean; id?: number; summary: string }>("ai_apply_action", { action });
 

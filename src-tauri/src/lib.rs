@@ -1,6 +1,6 @@
 mod backup;
 mod db;
-mod google_ai;
+mod ai_store;
 
 use std::path::PathBuf;
 use tauri::Manager;
@@ -63,7 +63,6 @@ pub fn run() {
             db::migrate(&path).expect("migrate db");
             spawn_scheduler(path.clone());
             app.manage(DbPath(path));
-            app.manage(google_ai::OAuthFlowState::default());
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -75,6 +74,8 @@ pub fn run() {
             db::delete_theme,
             db::reschedule_overdue,
             db::clear_ai_messages,
+            db::clear_ai_usage,
+            db::toggle_routine_log,
             db::start_timer,
             db::stop_timer,
             db::get_settings,
@@ -87,22 +88,14 @@ pub fn run() {
             backup::pick_backup_folder,
             backup::backup_status,
             backup::schedule_backup,
-            google_ai::google_auth_status,
-            google_ai::google_open_url,
-            google_ai::google_save_oauth_config,
-            google_ai::google_import_client_json,
-            google_ai::google_pick_client_json,
-            google_ai::google_save_api_key,
-            google_ai::google_set_preferences,
-            google_ai::google_oauth_sign_in,
-            google_ai::google_oauth_cancel,
-            google_ai::google_import_adc,
-            google_ai::google_sign_out,
-            google_ai::google_list_models,
-            google_ai::google_test_connection,
-            google_ai::ai_chat,
-            google_ai::ai_quick_prompt,
-            google_ai::ai_apply_action,
+            ai_store::ai_get_config,
+            ai_store::ai_save_config,
+            ai_store::open_external_url,
+            ai_store::get_planner_context,
+            ai_store::save_ai_turn,
+            ai_store::log_ai_usage_event,
+            ai_store::ai_usage_summary,
+            ai_store::ai_apply_action,
         ])
         .build(tauri::generate_context!())
         .expect("error while building My Planner");

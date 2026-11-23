@@ -11,6 +11,10 @@
     "tauri": "tauri"
   },
   "dependencies": {
+    "@ai-sdk/anthropic": "^4.0.107",
+    "@ai-sdk/google": "^4.0.124",
+    "@ai-sdk/openai": "^4.0.122",
+    "@ai-sdk/openai-compatible": "^3.0.94",
     "@halo-ds/react": "^0.4.1",
     "@tanstack/react-form": "^1.0.0",
     "@tanstack/react-query": "^5.0.0",
@@ -18,6 +22,7 @@
     "@tauri-apps/api": "^2.0.0",
     "@tauri-apps/plugin-dialog": "^2.0.0",
     "@tauri-apps/plugin-notification": "^2.0.0",
+    "ai": "^7.0.180",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
     "zod": "^3.25.0"

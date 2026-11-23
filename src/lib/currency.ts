@@ -80,14 +80,33 @@ const formatters = new Map<string, Intl.NumberFormat>();
 function getFormatter(code: string): Intl.NumberFormat {
   let formatter = formatters.get(code);
   if (!formatter) {
-    // No forced fraction digits: each currency keeps its own (XAF 0, USD 2, BHD 3).
-    formatter = new Intl.NumberFormat(undefined, {
-      style: "currency",
-      currency: code,
-    });
+    // Use narrowSymbol so currencies render their pure symbol (e.g. "$" instead of "US$" or "CA$"),
+    // while keeping each currency's native fraction digits (XAF 0, USD 2, BHD 3).
+    try {
+      formatter = new Intl.NumberFormat(undefined, {
+        style: "currency",
+        currency: code,
+        currencyDisplay: "narrowSymbol",
+      });
+    } catch {
+      formatter = new Intl.NumberFormat(undefined, {
+        style: "currency",
+        currency: code,
+      });
+    }
     formatters.set(code, formatter);
   }
   return formatter;
+}
+
+/** Strips any region/country letters prepended to a currency glyph (e.g. "US$" -> "$", "CA$" -> "$", "CN¥" -> "¥"). */
+function cleanCurrencySymbol(raw: string): string {
+  const trimmed = raw.trim();
+  const glyphMatch = /([$£¥€₹₩₦₱₫₪฿₺₴₸₽₡₲₵₭₮₼₾]+)$/.exec(trimmed);
+  if (glyphMatch) {
+    return glyphMatch[1];
+  }
+  return trimmed;
 }
 
 /** How many fraction digits this currency is normally shown with. */
@@ -104,36 +123,44 @@ function toDisplayValue(minor: number, rate: number): number {
   return ((Number.isFinite(minor) ? minor : 0) / 100) * (rate > 0 ? rate : 1);
 }
 
-/** Formats an amount held in base-currency minor units into the display currency. */
+/** Formats an amount held in base-currency minor units into the display currency (symbol + amount only). */
 export function formatMoney(minor: number, code = BASE_CURRENCY, rate = 1): string {
-  const value = toDisplayValue(minor, rate);
-  if (!codePattern.test(code)) {
-    return `${code} ${value.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
-  }
-  return getFormatter(code).format(value);
+  const { symbol, value, symbolLast } = formatMoneyParts(minor, code, rate);
+  return symbolLast ? `${value}${symbol}` : `${symbol}${value}`;
 }
 
 /** The sign, symbol and digits of a formatted amount, so the symbol can be styled apart. */
 export type MoneyParts = { sign: string; symbol: string; value: string; symbolLast: boolean };
 
-/** Formats an amount already expressed in the display currency (major units). */
+/** Formats an amount already expressed in the display currency (major units), returning symbol and amount only. */
 export function formatDisplayParts(amount: number, code = BASE_CURRENCY): MoneyParts {
+  const absAmount = Math.abs(Number.isFinite(amount) ? amount : 0);
   if (!codePattern.test(code)) {
     return {
       sign: "",
-      symbol: code,
-      value: ` ${amount.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`,
+      symbol: cleanCurrencySymbol(code),
+      value: ` ${absAmount.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`,
       symbolLast: false,
     };
   }
-  const parts = getFormatter(code).formatToParts(amount);
+  const parts = getFormatter(code).formatToParts(absAmount);
   const index = parts.findIndex((p) => p.type === "currency");
-  if (index === -1) return { sign: "", symbol: "", value: getFormatter(code).format(amount), symbolLast: false };
-  const isNumber = (type: string) => type === "integer" || type === "fraction" || type === "group" || type === "decimal";
+  if (index === -1) {
+    return { sign: "", symbol: "", value: getFormatter(code).format(absAmount), symbolLast: false };
+  }
+  const isNumber = (type: string) =>
+    type === "integer" || type === "fraction" || type === "group" || type === "decimal";
+  const rawSymbol = parts
+    .filter((p) => p.type === "currency")
+    .map((p) => p.value)
+    .join("");
   return {
-    sign: parts.filter((p) => p.type === "minusSign" || p.type === "plusSign").map((p) => p.value).join(""),
-    symbol: parts.filter((p) => p.type === "currency").map((p) => p.value).join(""),
-    value: parts.filter((p) => p.type !== "currency" && p.type !== "minusSign" && p.type !== "plusSign").map((p) => p.value).join(""),
+    sign: "",
+    symbol: cleanCurrencySymbol(rawSymbol),
+    value: parts
+      .filter((p) => p.type !== "currency" && p.type !== "minusSign" && p.type !== "plusSign")
+      .map((p) => p.value)
+      .join(""),
     // Locales that put the symbol after the number, e.g. "1,00 €".
     symbolLast: parts.slice(0, index).some((p) => isNumber(p.type)),
   };
